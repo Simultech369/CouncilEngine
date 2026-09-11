@@ -1,0 +1,90 @@
+{
+  "RULE-SEC-001": {
+    "rule_id": "RULE-SEC-001",
+    "domain": "security_and_auth",
+    "title": "Timing-Safe Webhook Signature Verification",
+    "statement": "All incoming webhook signatures (Postmark, Stripe, Sentry, Lemon Squeezy) must be validated using constant-time comparison (crypto.timingSafeEqual) over raw request payloads to prevent side-channel timing attacks.",
+    "rationale": "Prevents attacker ability to brute-force authentication signatures byte-by-byte via timing disparities.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-SEC-002": {
+    "rule_id": "RULE-SEC-002",
+    "domain": "security_and_auth",
+    "title": "Strict Public vs Private Secret Isolation",
+    "statement": "Public client environment variables (NEXT_PUBLIC_*, VITE_*) must never contain private API keys, backend server tokens, or decryption secrets.",
+    "rationale": "Client bundles are fully accessible to end users; any leaked private secret compromises infrastructure.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-SEC-003": {
+    "rule_id": "RULE-SEC-003",
+    "domain": "security_and_auth",
+    "title": "Mandatory Telemetry & Error Data Scrubbing",
+    "statement": "Before sending events to external observability or analytics providers (Sentry, Plausible, Umami, PostHog), payloads must pass through recursive data scrubbers stripping prompts, conversation transcripts, authorization headers, cookies, and user PII.",
+    "rationale": "Protects user privacy and complies with data protection regulations while preventing prompt leakage.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-SEC-004": {
+    "rule_id": "RULE-SEC-004",
+    "domain": "security_and_auth",
+    "title": "No Raw Tokens in Commands, Transcripts, Files, or Shell History",
+    "statement": "Authentication tokens, API keys, and bearer credentials must never be inlined in command-line arguments, tool invocations, conversation transcripts, source code, unencrypted files, or persistent shell history. Credential access must use OS keyring/credential managers (e.g., gh auth login), memory-zeroed SecureString pointers, or runtime environment variables with automated transcript scrubbing.",
+    "rationale": "Inlined credentials permanently leak into shell history logs, process table listings (/proc, tasklist), CI logs, and agent transcript records, rendering prompt-level privacy guarantees moot.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-WEB3-001": {
+    "rule_id": "RULE-WEB3-001",
+    "domain": "web3_and_soroban",
+    "title": "Soroban Stroop Precision & Decimal Drift Guard",
+    "statement": "All token mathematics and health factor calculations must maintain integer stroop precision (1e-7 tolerance) with deterministic remainder attribution to prevent decimal rounding losses or contract desync.",
+    "rationale": "Prevents cumulative rounding errors that could result in frozen funds or exploitable arbitrage.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-WEB3-002": {
+    "rule_id": "RULE-WEB3-002",
+    "domain": "web3_and_soroban",
+    "title": "State Archival and TTL Extension Invariant",
+    "statement": "Every persistent or instance storage read/write in Soroban smart contracts must include TTL bump operations (MIN_TTL, BUMP_TTL) to prevent ledger archival of active contract data.",
+    "rationale": "Soroban state archiving deletes un-bumped data from active ledger state, breaking contract execution.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-WEB3-003": {
+    "rule_id": "RULE-WEB3-003",
+    "domain": "web3_and_soroban",
+    "title": "Duplicate Settlement Anchoring Prevention",
+    "statement": "Settlement references and transaction hashes must map 1:1 with invoice/order records in persistent storage, returning explicit DuplicateSettlementRef errors on duplicate reuse attempts.",
+    "rationale": "Prevents double-spend and duplicate invoice settlement fraud across distinct payments.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  },
+  "RULE-MON-001": {
+    "rule_id": "RULE-MON-001",
+    "domain": "creator_monetization",
+    "title": "Strict 10,000 Basis Points (100.00%) Royalty Summation",
+    "statement": "Collaborator royalty splits must sum to exactly 10,000 basis points (100.00%) before contract submission, with pro-rata revenue calculated across individual recipients.",
+    "rationale": "Ensures all revenue is accounted for with zero unallocated leakage or over-allocation claims.",
+    "status": "ACTIVE",
+    "version": 1,
+    "created_at": 1787260000.0,
+    "history": []
+  }
+}
