@@ -530,6 +530,13 @@ class CouncilReceiptVerifier:
         # 5. Council Vote Quorum & Supermajority Verification
         cls.verify_council_vote(vote_env, roster_env, inv_envelopes, qual_envelopes, route_envelopes, packet_env, budget_envelopes, current_time=current_time)
 
+        if vote.final_verdict != "APPROVED":
+            raise VerificationError(f"Apply aborted: Final verdict is {vote.final_verdict}")
+        if not vote.supermajority_achieved:
+            raise VerificationError("Apply aborted: Supermajority not achieved")
+        if getattr(vote, 'critical_finding_veto', False):
+            raise VerificationError("Apply aborted: Critical finding veto is active")
+
         # 6. Real Live Isolated Sandbox Execution Evidence Gate
         if sandbox.patch_payload_sha256 != patch_env.payload_sha256:
             raise VerificationError("Sandbox executed different patch receipt hash")

@@ -194,6 +194,123 @@ class Ed25519ApprovalAuthenticator(ApprovalAuthenticator):
         receipt = receipt_for_signing.model_copy(update={"detached_signature": signature})
         return ReceiptEnvelope.seal(receipt)
 
+import subprocess
+import tempfile
+import os
+
+class SSHApprovalAuthenticator(ApprovalAuthenticator):
+    """
+    SSH approval authenticator leveraging standard library/system openSSH (ssh-keygen -Y).
+    Requires no heavy C-compiled dependencies like cryptography.
+    """
+    def __init__(self, allowed_signers_file: Optional[str] = None):
+        if allowed_signers_file is None:
+            allowed_signers_file = os.path.expanduser("~/.ssh/council_allowed_signers")
+        self.allowed_signers_file = allowed_signers_file
+
+    def authenticate_approval(self, approval_env: ReceiptEnvelope[HumanApprovalReceipt], expected_subject_sha256: str) -> bool:
+        receipt = approval_env.payload
+        now = time.time()
+
+        if receipt.signature_algorithm != "SSH":
+            return False
+
+        if not (receipt.issued_at <= now <= receipt.expires_at):
+            return False
+
+        if receipt.subject_payload_sha256 != expected_subject_sha256:
+            return False
+
+        if not os.path.isfile(self.allowed_signers_file):
+            return False
+
+        payload_data = _approval_payload_data(receipt).encode("utf-8")
+
+        with tempfile.NamedTemporaryFile(delete=False) as data_file, \
+             tempfile.NamedTemporaryFile(delete=False) as sig_file:
+            data_file.write(payload_data)
+            data_file.flush()
+            
+            sig_file.write(receipt.detached_signature.encode("utf-8"))
+            sig_file.flush()
+
+            data_path = data_file.name
+            sig_path = sig_file.name
+
+        try:
+            with open(data_path, 'rb') as stdin_file:
+                proc = subprocess.run(
+                    [
+                        "ssh-keygen", "-Y", "verify",
+                        "-f", self.allowed_signers_file,
+                        "-I", receipt.approver_identity,
+                        "-n", "council",
+                        "-s", sig_path
+                    ],
+                    stdin=stdin_file,
+                    capture_output=True,
+                    text=True
+                )
+            return proc.returncode == 0
+        finally:
+            if os.path.exists(data_path):
+                os.remove(data_path)
+            if os.path.exists(sig_path):
+                os.remove(sig_path)
+
+    @classmethod
+    def create_signed_approval(
+        cls,
+        subject_type: str,
+        subject_payload_sha256: str,
+        approver_identity: str,
+        approver_key_id: str,
+        private_key_path: str,
+        validity_sec: int = 3600
+    ) -> ReceiptEnvelope[HumanApprovalReceipt]:
+        now = time.time()
+        expires = now + validity_sec
+        receipt_for_signing = HumanApprovalReceipt(
+            subject_type=subject_type,
+            subject_payload_sha256=subject_payload_sha256,
+            approver_identity=approver_identity,
+            approver_key_id=approver_key_id,
+            signature_algorithm="SSH",
+            detached_signature="",
+            issued_at=now,
+            expires_at=expires
+        )
+        payload_data = _approval_payload_data(receipt_for_signing).encode("utf-8")
+
+        with tempfile.NamedTemporaryFile(delete=False) as data_file:
+            data_file.write(payload_data)
+            data_file.flush()
+            data_path = data_file.name
+
+        try:
+            proc = subprocess.run(
+                [
+                    "ssh-keygen", "-Y", "sign",
+                    "-f", private_key_path,
+                    "-n", "council",
+                    data_path
+                ],
+                capture_output=True,
+                text=True
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(f"Failed to sign: {proc.stderr}")
+
+            with open(data_path + ".sig", "r", encoding="utf-8") as f:
+                sig = f.read()
+            os.remove(data_path + ".sig")
+
+            receipt = receipt_for_signing.model_copy(update={"detached_signature": sig})
+            return ReceiptEnvelope.seal(receipt)
+        finally:
+            if os.path.exists(data_path):
+                os.remove(data_path)
+
 class CompositeApprovalAuthenticator(ApprovalAuthenticator):
     """
     Algorithm-pinned authenticator registry for deployments carrying multiple human key types.

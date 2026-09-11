@@ -176,13 +176,26 @@ class DockerSandboxDaemon:
         isolation_mode = "LOCAL_SUBPROCESS_MOCK" if mock_execution else "DOCKER_CONTAINER_ENFORCED"
         isolated = False if mock_execution else (self.config.network_mode == "none")
 
+        if mock_execution:
+            from council_verifier import CouncilReceiptVerifier
+            true_digest = CouncilReceiptVerifier.TRUSTED_TOOLCHAIN_DIGEST
+        else:
+            try:
+                inspect_proc = subprocess.run(
+                    ["docker", "inspect", "--format='{{index .RepoDigests 0}}'", self.config.image_name],
+                    capture_output=True, text=True, check=True
+                )
+                true_digest = inspect_proc.stdout.strip().strip("'")
+            except Exception:
+                true_digest = hashlib.sha256(self.config.image_name.encode("utf-8")).hexdigest()
+
         receipt = ExecutionSandboxReceipt(
             patch_payload_sha256=patch_payload_sha,
             snapshot_composite_state_sha256=hashlib.sha256(workspace_host_path.encode("utf-8")).hexdigest(),
             isolation_mode=isolation_mode,
             container_engine=engine,
             execution_mode=mode,
-            container_image_digest=hashlib.sha256(self.config.image_name.encode("utf-8")).hexdigest(),
+            container_image_digest=true_digest,
             network_isolated=isolated,
             test_command=test_command.split() if isinstance(test_command, str) else test_command,
             test_exit_code=exit_code,

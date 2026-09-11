@@ -182,12 +182,20 @@ jobs:
         ]
 
         if stage_execution_receipts:
-            passed_count = 1
+            REQUIRED_STAGE_IDS = {s.step_id for s in steps}
+            actual_passed_stages = set()
+            duplicate_detected = False
+
             for res in stage_execution_receipts:
                 step_results.append(res)
                 if res.get("status") == "PASSED":
-                    passed_count += 1
-            all_passed = (passed_count == len(steps) + 1)
+                    step_id = res.get("step_id")
+                    if step_id in actual_passed_stages:
+                        duplicate_detected = True
+                    actual_passed_stages.add(step_id)
+            
+            passed_count = len(actual_passed_stages) + 1
+            all_passed = REQUIRED_STAGE_IDS.issubset(actual_passed_stages) and not duplicate_detected
         else:
             # Dry-run / unexecuted stages
             for s in steps:

@@ -309,7 +309,7 @@ class HumanApprovalReceipt(ImmutableContract):
     subject_payload_sha256: str
     approver_identity: str
     approver_key_id: str
-    signature_algorithm: Literal["ED25519", "ECDSA_P256", "HMAC_SHA256"]
+    signature_algorithm: Literal["ED25519", "ECDSA_P256", "HMAC_SHA256", "SSH"]
     detached_signature: str
     issued_at: float
     expires_at: float

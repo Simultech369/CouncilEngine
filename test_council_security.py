@@ -177,6 +177,37 @@ class TestCouncilV4_1Adversarial(unittest.TestCase):
             )
         self.assertIn("isolation_mode was 'LOCAL_SUBPROCESS_MOCK'", str(ctx.exception))
 
+    def test_council_verifier_rejects_rejected_final_verdict(self):
+        rejected_vote = CouncilVoteReceipt(
+            roster_payload_sha256=self.roster_env.payload_sha256,
+            patch_payload_sha256=self.patch_env.payload_sha256,
+            sandbox_payload_sha256=self.sandbox_env.payload_sha256,
+            quorum_size=3, approvals_count=0, rejections_count=3,
+            supermajority_achieved=False, critical_finding_veto=True, final_verdict="REJECTED",
+            votes=[
+                RedactedVoteRecord(voter_slug="m1", model_family="qwen", provider="p_m1", invocation_payload_sha256=list(self.invs.keys())[0], decision="reject", confidence=0.9, reasoning_sha256="h", redacted_summary="no"),
+                RedactedVoteRecord(voter_slug="m2", model_family="deepseek", provider="p_m2", invocation_payload_sha256=list(self.invs.keys())[1], decision="reject", confidence=0.9, reasoning_sha256="h", redacted_summary="no"),
+                RedactedVoteRecord(voter_slug="m3", model_family="gpt", provider="p_m3", invocation_payload_sha256=list(self.invs.keys())[2], decision="reject", confidence=0.9, reasoning_sha256="h", redacted_summary="no"),
+            ]
+        )
+        rejected_vote_env = ReceiptEnvelope.seal(rejected_vote)
+        rejected_auth = ApplyAuthorizationReceipt(
+            authorized_patch_sha256=self.patch_sha,
+            target_composite_state_sha256=self.state_sha,
+            council_vote_payload_sha256=rejected_vote_env.payload_sha256,
+            auth_mode="INTERACTIVE_HUMAN_PROMPT",
+            human_approval_payload_sha256=self.human_approval_env.payload_sha256
+        )
+        with self.assertRaises(VerificationError) as ctx:
+            CouncilReceiptVerifier.verify_full_apply_chain(
+                ReceiptEnvelope.seal(rejected_auth), rejected_vote_env, self.roster_env, self.invs, self.quals, self.routes,
+                self.pkt_env, self.budgets, self.sandbox_env, self.patch_env, self.snap_env,
+                self.human_approval_env, self.raw_patch, self.state_sha,
+                authenticator=self.authenticator, current_time=self.now
+            )
+        self.assertIn("Apply aborted: Final verdict is REJECTED", str(ctx.exception))
+
+
     def test_bot_or_invalid_signature_cannot_authorize_apply(self):
         forged_approval = HMACApprovalAuthenticator.create_signed_approval(
             subject_type="PATCH_APPLY",

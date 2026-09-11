@@ -273,5 +273,27 @@ class TestCouncilTelemetry(unittest.TestCase):
         with self.assertRaises(VerificationError):
             CouncilReceiptVerifier.verify_envelope(forged_env, ReviewHopTraceReceipt)
 
+    def test_start_span_rejects_invalid_names(self):
+        with self.assertRaises(ValueError):
+            self.tracer.start_span(name="invalid span name")
+        with self.assertRaises(ValueError):
+            self.tracer.start_span(name="invalid/span/name")
+        
+        # Valid names should not raise
+        self.tracer.start_span(name="valid.span-name_123")
+
+    def test_build_command_record_redacts_sensitive_flags(self):
+        cmd = self.tracer.build_command_record(
+            command_argv=["curl", "-k", "secret1", "--key", "secret2", "--key=secret3", "--authorization", "secret4", "https://api.example.com"],
+            executed=False
+        )
+        argv = cmd.command_argv
+        self.assertIn("[REDACTED]", argv)
+        self.assertNotIn("secret1", argv)
+        self.assertNotIn("secret2", argv)
+        self.assertNotIn("--key=secret3", argv)
+        self.assertIn("--key=[REDACTED]", argv)
+        self.assertNotIn("secret4", argv)
+
 if __name__ == "__main__":
     unittest.main()

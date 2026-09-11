@@ -186,6 +186,47 @@ class TestModelGatewayLogGuard(unittest.TestCase):
 
             mock_post.assert_not_called()
 
+    def test_local_only_verified_route_enforces_loopback_ip(self):
+        ctx_engine = LogDerivedContextEngine(session_id="sess_loopback_drift")
+        ctx_engine.append_event("CONFIG_SET", "system", {
+            "model_slug": "qwen2.5-coder:7b",
+            "provider": "ollama_local",
+            "route_id": "route_bad_ip",
+            "temperature": 0.1,
+            "max_tokens": 256
+        })
+        ctx_engine.append_event("USER_INPUT", "user", {"content": "Analyze repository."})
+
+        bad_route = create_route_attestation(
+            route_id="route_bad_ip",
+            provider_name="ollama_local",
+            endpoint_url="http://192.168.1.100:11434/api/generate",
+            compliance_tier="LOCAL_ONLY_VERIFIED",
+            content_retention_days=0,
+            zdr_verified=True,
+            fallbacks_allowed=False,
+            validity_sec=3500
+        )
+
+        with patch("requests.post") as mock_post:
+            inv_env, err_msg = self.gateway.dispatch_call(
+                model_slug="qwen2.5-coder:7b",
+                model_family="qwen",
+                provider="ollama_local",
+                route_env=bad_route,
+                qual_env=self.qual,
+                packet_env=self.packet,
+                budget_env=None,
+                prompt_text="Analyze repository.",
+                temperature=0.1,
+                max_tokens=256,
+                context_engine=ctx_engine
+            )
+
+            mock_post.assert_not_called()
+            self.assertIsNone(inv_env)
+            self.assertIn("must use loopback address, got 192.168.1.100", err_msg)
+
     def test_missing_context_engine_raises_error(self):
         with self.assertRaises(ValueError):
             self.gateway.dispatch_call(

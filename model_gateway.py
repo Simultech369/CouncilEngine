@@ -400,11 +400,28 @@ class ModelGateway:
             self.dlq.record_failure(model_slug, "TIMEOUT", prompt_text, err_msg)
             return None, err_msg
 
+        # Step 5.5: Loopback IP validation for LOCAL_ONLY_VERIFIED
+        import urllib.parse
+        if route.compliance_tier == "LOCAL_ONLY_VERIFIED":
+            parsed_url = urllib.parse.urlparse(target_url)
+            host = parsed_url.hostname
+            if host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+                err_msg = f"LOCAL_ONLY_VERIFIED route must use loopback address, got {host}"
+                self.dlq.record_failure(model_slug, "ROUTE_DENIED", prompt_text, err_msg)
+                return None, err_msg
+
         # Step 6: Network HTTP Call
         t0 = time.perf_counter()
 
         try:
-            res = requests.post(target_url, headers=headers, json=payload, timeout=timeout_sec)
+            res = requests.post(
+                target_url, 
+                headers=headers, 
+                json=payload, 
+                timeout=timeout_sec,
+                allow_redirects=False,
+                proxies={"http": "", "https": ""}
+            )
             res.raise_for_status()
             raw_resp = self._extract_response_text(res.json(), protocol_type)
             latency = round((time.perf_counter() - t0) * 1000.0, 2)
@@ -502,9 +519,26 @@ class ModelGateway:
             self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, str(desync_err))
             raise desync_err
 
+        # Loopback IP validation for LOCAL_ONLY_VERIFIED
+        import urllib.parse
+        if route.compliance_tier == "LOCAL_ONLY_VERIFIED":
+            parsed_url = urllib.parse.urlparse(target_url)
+            host = parsed_url.hostname
+            if host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+                err_msg = f"LOCAL_ONLY_VERIFIED route must use loopback address, got {host}"
+                self.dlq.record_failure(model_slug, "ROUTE_DENIED", prompt_text, err_msg)
+                raise VerificationError(err_msg)
+
         req_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
         try:
-            res = requests.post(target_url, headers=headers, json=payload, timeout=timeout_sec)
+            res = requests.post(
+                target_url, 
+                headers=headers, 
+                json=payload, 
+                timeout=timeout_sec,
+                allow_redirects=False,
+                proxies={"http": "", "https": ""}
+            )
             res.raise_for_status()
             raw_resp = self._extract_response_text(res.json(), protocol_type)
             completed_at = time.time()

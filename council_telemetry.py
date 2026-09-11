@@ -63,6 +63,10 @@ class CouncilTelemetryTracer:
         attributes: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, str]:
         """Starts a span and returns (trace_id, span_id)."""
+        import re
+        if not re.match(r"^[A-Za-z0-9_.-]+$", name):
+            raise ValueError(f"Invalid span name '{name}'. Must match ^[A-Za-z0-9_.-]+$")
+
         t_id = trace_id or self.generate_trace_id()
         s_id = self.generate_span_id()
         start_ns = time.time_ns()
@@ -155,11 +159,29 @@ class CouncilTelemetryTracer:
             raise ValueError("non-executed command records cannot include execution artifacts")
         if executed and exit_code is None:
             raise ValueError("executed command records must include exit_code")
+
+        redacted_argv = []
+        skip_next = False
+        for i, arg in enumerate(command_argv):
+            arg_str = str(arg)
+            if skip_next:
+                redacted_argv.append("[REDACTED]")
+                skip_next = False
+                continue
+            if arg_str.lower() in ("--key", "-k", "--authorization", "authorization"):
+                redacted_argv.append(arg_str)
+                skip_next = True
+            elif arg_str.lower().startswith("--key=") or arg_str.lower().startswith("-k=") or arg_str.lower().startswith("--authorization=") or arg_str.lower().startswith("authorization="):
+                parts = arg_str.split("=", 1)
+                redacted_argv.append(f"{parts[0]}=[REDACTED]")
+            else:
+                redacted_argv.append(arg_str)
+
         stdout_sha = self._sha256_text(stdout or "") if stdout is not None else None
         stderr_sha = self._sha256_text(stderr or "") if stderr is not None else None
         return ReviewHopCommandRecord(
-            command_argv=[str(part) for part in command_argv],
-            command_sha256=self._sha256_json([str(part) for part in command_argv]),
+            command_argv=redacted_argv,
+            command_sha256=self._sha256_json(redacted_argv),
             executed=executed,
             exit_code=exit_code,
             stdout_sha256=stdout_sha,

@@ -66,6 +66,23 @@ class TestCouncilCICDWorkflow(unittest.TestCase):
         self.assertIn("Autonomous Council Verification Gate — PR #101", eval_res.pr_comment_markdown)
         self.assertIn("PASSED (ALL GATES CLEAN)", eval_res.pr_comment_markdown)
 
+    def test_duplicate_stage_receipts_are_rejected(self):
+        stage_receipts = [
+            {"step_id": "step_ast", "name": "AST CWE Sanitizer", "status": "PASSED", "duration_sec": 0.1, "exit_code": 0},
+            {"step_id": "step_ast", "name": "AST CWE Sanitizer", "status": "PASSED", "duration_sec": 0.1, "exit_code": 0},
+            {"step_id": "step_ast", "name": "AST CWE Sanitizer", "status": "PASSED", "duration_sec": 0.1, "exit_code": 0},
+            {"step_id": "step_ast", "name": "AST CWE Sanitizer", "status": "PASSED", "duration_sec": 0.1, "exit_code": 0},
+            {"step_id": "step_ast", "name": "AST CWE Sanitizer", "status": "PASSED", "duration_sec": 0.1, "exit_code": 0},
+        ]
+        eval_res = self.workflow.evaluate_pr_pipeline(
+            pr_number=104,
+            branch_name="feature/secure-auth",
+            touched_files=["src/auth.py"],
+            candidate_diff="+from council_contracts import ReceiptEnvelope\n+def check(): return True",
+            stage_execution_receipts=stage_receipts
+        )
+        self.assertFalse(eval_res.all_passed)
+
     def test_dry_run_without_live_receipts_marks_stages_not_run(self):
         eval_res = self.workflow.evaluate_pr_pipeline(
             pr_number=103,

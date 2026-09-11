@@ -140,6 +140,39 @@ class TestHumanApprovalAuthenticators(unittest.TestCase):
         self.assertTrue(composite.authenticate_approval(ed25519_env, self.subject_sha))
         self.assertFalse(CompositeApprovalAuthenticator({"HMAC_SHA256": hmac_authenticator}).authenticate_approval(ed25519_env, self.subject_sha))
 
+    def test_ssh_approval_authenticator_lifecycle(self):
+        import subprocess
+        import tempfile
+        import os
+        from human_approval import SSHApprovalAuthenticator
+
+        with tempfile.TemporaryDirectory() as d:
+            key_path = os.path.join(d, "id_test")
+            # Generate key
+            subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", ""], check=True, capture_output=True)
+            
+            with open(key_path + ".pub", "r") as f:
+                pub = f.read().strip()
+            
+            allowed_signers_path = os.path.join(d, "allowed_signers")
+            with open(allowed_signers_path, "w") as f:
+                f.write(f"alice_security_lead {pub}\n")
+                
+            authenticator = SSHApprovalAuthenticator(allowed_signers_file=allowed_signers_path)
+            
+            # Sign
+            approval_env = SSHApprovalAuthenticator.create_signed_approval(
+                subject_type="PATCH_APPLY",
+                subject_payload_sha256=self.subject_sha,
+                approver_identity="alice_security_lead",
+                approver_key_id="test_key",
+                private_key_path=key_path,
+                validity_sec=3600
+            )
+
+            self.assertTrue(authenticator.authenticate_approval(approval_env, self.subject_sha))
+            self.assertFalse(authenticator.authenticate_approval(approval_env, "other_subject"))
+
 
 if __name__ == "__main__":
     unittest.main()
