@@ -53,7 +53,7 @@ class DockerSandboxDaemon:
         workspace_host_path: str
     ) -> List[str]:
         cmd = [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", "--pull=never",
             f"--network={self.config.network_mode}",
             f"--cpus={self.config.cpu_limit}",
             f"--memory={self.config.memory_limit}",
@@ -186,12 +186,29 @@ class DockerSandboxDaemon:
                     capture_output=True, text=True, check=True
                 )
                 true_digest = inspect_proc.stdout.strip().strip("'")
-            except Exception:
-                true_digest = hashlib.sha256(self.config.image_name.encode("utf-8")).hexdigest()
+            except Exception as e:
+                raise RuntimeError(f"Failed to cryptographically resolve docker image digest for {self.config.image_name}: {str(e)}")
+
+        def _hash_workspace_content(path: str) -> str:
+            hasher = hashlib.sha256()
+            for root, dirs, files in os.walk(path):
+                dirs.sort()
+                for file in sorted(files):
+                    hasher.update(file.encode('utf-8'))
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, 'rb') as f:
+                            while chunk := f.read(8192):
+                                hasher.update(chunk)
+                    except IOError:
+                        pass
+            return hasher.hexdigest()
+
+        workspace_hash = _hash_workspace_content(workspace_host_path)
 
         receipt = ExecutionSandboxReceipt(
             patch_payload_sha256=patch_payload_sha,
-            snapshot_composite_state_sha256=hashlib.sha256(workspace_host_path.encode("utf-8")).hexdigest(),
+            snapshot_composite_state_sha256=workspace_hash,
             isolation_mode=isolation_mode,
             container_engine=engine,
             execution_mode=mode,

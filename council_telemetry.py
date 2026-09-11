@@ -66,6 +66,10 @@ class CouncilTelemetryTracer:
         import re
         if not re.match(r"^[A-Za-z0-9_.-]+$", name):
             raise ValueError(f"Invalid span name '{name}'. Must match ^[A-Za-z0-9_.-]+$")
+        if trace_id is not None and not re.match(r"^[0-9a-fA-F-]+$", trace_id):
+            raise ValueError(f"Invalid trace_id '{trace_id}'.")
+        if parent_span_id is not None and not re.match(r"^[0-9a-fA-F-]+$", parent_span_id):
+            raise ValueError(f"Invalid parent_span_id '{parent_span_id}'.")
 
         t_id = trace_id or self.generate_trace_id()
         s_id = self.generate_span_id()
@@ -133,6 +137,9 @@ class CouncilTelemetryTracer:
         return record
 
     def list_spans_for_trace(self, trace_id: str) -> List[OTelSpanRecord]:
+        import re
+        if not re.match(r"^[0-9a-fA-F-]+$", trace_id):
+            raise ValueError(f"Invalid trace_id '{trace_id}'.")
         trace_file = os.path.join(self.trace_storage_dir, f"trace_{trace_id}.ndjson")
         if not os.path.exists(trace_file):
             return []

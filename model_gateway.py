@@ -405,7 +405,7 @@ class ModelGateway:
         if route.compliance_tier == "LOCAL_ONLY_VERIFIED":
             parsed_url = urllib.parse.urlparse(target_url)
             host = parsed_url.hostname
-            if host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+            if host not in ["localhost", "127.0.0.1", "::1"]:
                 err_msg = f"LOCAL_ONLY_VERIFIED route must use loopback address, got {host}"
                 self.dlq.record_failure(model_slug, "ROUTE_DENIED", prompt_text, err_msg)
                 return None, err_msg
@@ -524,7 +524,7 @@ class ModelGateway:
         if route.compliance_tier == "LOCAL_ONLY_VERIFIED":
             parsed_url = urllib.parse.urlparse(target_url)
             host = parsed_url.hostname
-            if host not in ["localhost", "127.0.0.1", "::1", "0.0.0.0"]:
+            if host not in ["localhost", "127.0.0.1", "::1"]:
                 err_msg = f"LOCAL_ONLY_VERIFIED route must use loopback address, got {host}"
                 self.dlq.record_failure(model_slug, "ROUTE_DENIED", prompt_text, err_msg)
                 raise VerificationError(err_msg)
