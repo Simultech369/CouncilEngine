@@ -72,7 +72,11 @@ class TestCouncilTelemetry(unittest.TestCase):
         self.assertEqual(child_span.parent_span_id, root_id)
 
     def test_review_hop_trace_receipt_records_provenance_without_sandbox_overclaim(self):
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        curr_dir = os.path.abspath(os.path.dirname(__file__))
+        if os.path.exists(os.path.join(curr_dir, ".git")):
+            repo_root = curr_dir
+        else:
+            repo_root = os.path.abspath(os.path.join(curr_dir, "..", ".."))
         cmd = self.tracer.build_command_record(
             command_argv=["python", "-m", "unittest", "tools/council/test_external_a2a_adapter.py"],
             executed=True,
