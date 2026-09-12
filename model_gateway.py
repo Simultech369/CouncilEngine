@@ -297,6 +297,9 @@ class ModelGateway:
                 "Mandatory LogDerivedContextEngine must be supplied for model dispatch to guarantee append-only provenance."
             )
 
+        if budget_env is not None and budget_env.payload.reserved_cost_usd > 0.50:
+            raise ValueError(f"Projected spend of ${budget_env.payload.reserved_cost_usd} crosses the strict $0.50 per query limit.")
+
         # Step 0: Resolve & verify registered prompt config if specified
         system_prompt, response_format, tool_schemas, provider_parameters, _ = self.resolve_prompt_config(
             prompt_id=prompt_id,

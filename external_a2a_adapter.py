@@ -11,6 +11,8 @@ from typing import Dict, Any, List, Optional, Tuple, Literal, Set
 from council_contracts import CONTRACT_VERSION, ImmutableContract, A2AMessage, ReceiptEnvelope, ReviewHopTraceReceipt
 from council_verifier import CouncilReceiptVerifier, VerificationError
 from lifecycle_hooks import sanitize_untrusted_text
+import unicodedata
+import uuid
 
 # Sensitive pattern regular expressions for redaction
 PRIVATE_PATH_REGEX = re.compile(
@@ -72,6 +74,27 @@ class ExternalA2ASecurityError(Exception):
     """Raised when an external A2A payload violates privacy, PHI, or remote execution rules."""
     pass
 
+class PIIUUIDSwapper:
+    """
+    Stateful swapper to map detected PHI/PII strings to UUIDs before the model sees them,
+    allowing unmasking after the generation without exposing the sensitive data.
+    """
+    def __init__(self):
+        self.mapping = {}
+
+    def mask(self, text: str) -> str:
+        def replace(match):
+            val = match.group(0)
+            if val not in self.mapping:
+                self.mapping[val] = f"UUID-{uuid.uuid4()}"
+            return self.mapping[val]
+        return PHI_PII_REGEX.sub(replace, text)
+
+    def unmask(self, text: str) -> str:
+        for pii_val, mask_val in self.mapping.items():
+            text = text.replace(mask_val, pii_val)
+        return text
+
 class ExternalA2AAdapter:
     """
     Converts Council-native messages to and from external A2A shapes,
@@ -107,12 +130,13 @@ class ExternalA2AAdapter:
         )
 
     @classmethod
-    def sanitize_external_payload(cls, data: Any) -> Any:
+    def sanitize_external_payload(cls, data: Any, swapper: Optional[PIIUUIDSwapper] = None, is_top_level_string: bool = False) -> Any:
         """
         Recursively sanitizes dictionary or string payloads to eliminate:
         1. Local absolute filesystem paths (C:\\... or /Users/...)
         2. Private keys, secret tokens, or API credentials
-        3. Potential PHI/PII markers
+        3. Potential PHI/PII markers (using swapper if provided, else REDACTED)
+        4. Applies NFKC Normalization and TR39 structural separation bounds.
         """
         if isinstance(data, dict):
             sanitized = {}
@@ -120,24 +144,37 @@ class ExternalA2AAdapter:
                 key = str(k)
                 if cls._is_unsafe_external_key(key):
                     continue
-                sanitized[key] = cls.sanitize_external_payload(v)
+                sanitized[key] = cls.sanitize_external_payload(v, swapper=swapper)
             return sanitized
         elif isinstance(data, list):
-            return [cls.sanitize_external_payload(item) for item in data]
+            return [cls.sanitize_external_payload(item, swapper=swapper) for item in data]
         elif isinstance(data, str):
+            # NFKC Normalization (TR39)
+            redacted = unicodedata.normalize("NFKC", data)
+            
             # Redact file system paths
-            redacted = PRIVATE_PATH_REGEX.sub("[REDACTED_LOCAL_PATH]", data)
+            redacted = PRIVATE_PATH_REGEX.sub("[REDACTED_LOCAL_PATH]", redacted)
             # Redact secret phrases
             redacted = PRIVATE_KEY_REGEX.sub("[REDACTED_SECRET]", redacted)
-            # Redact direct PHI/PII patterns and strip obvious instruction payloads.
-            redacted = PHI_PII_REGEX.sub("[REDACTED_PHI_PII]", redacted)
+            
+            # Swap or Redact direct PHI/PII patterns
+            if swapper:
+                redacted = swapper.mask(redacted)
+            else:
+                redacted = PHI_PII_REGEX.sub("[REDACTED_PHI_PII]", redacted)
+                
             redacted = MARKDOWN_COMMENT_REGEX.sub("[REMOVED_UNTRUSTED_COMMENT]", redacted)
             if CHAT_TEMPLATE_REGEX.search(redacted):
                 redacted = "[REMOVED_UNTRUSTED_INSTRUCTION]"
             redacted, _ = sanitize_untrusted_text(redacted)
             redacted = INSTRUCTION_OVERRIDE_REGEX.sub("[REMOVED_UNTRUSTED_INSTRUCTION]", redacted)
+            
             if len(redacted) > MAX_EXTERNAL_STRING_CHARS:
                 redacted = redacted[:MAX_EXTERNAL_STRING_CHARS] + "[TRUNCATED]"
+                
+            if is_top_level_string:
+                redacted = f"<A2A_PAYLOAD_BOUNDARY>\n{redacted}\n</A2A_PAYLOAD_BOUNDARY>"
+                
             return redacted
         else:
             return data
