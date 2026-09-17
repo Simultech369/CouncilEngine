@@ -154,6 +154,16 @@ def _default_structural_evaluator(
         # Unknown scope — give benefit of doubt
         has_scope_alignment = 0.5
 
+    # PROMPT ALIGNMENT (Evaluating the actual prompt variant)
+    prompt_lower = prompt_text.lower()
+    
+    # 1. Invariant Shields: Does the prompt enforce LRN-015 protections?
+    shields = ["_startround", "updatecreditlimit", "registervoterwithsignature"]
+    prompt_has_invariant_shields = 1.0 if sum(1 for s in shields if s in prompt_lower) >= 2 else 0.0
+
+    # 2. Prompt Scope Alignment: Does the prompt explicitly declare the expected scope?
+    prompt_declares_scope = 1.0 if (scope_key in prompt_lower or scope_key == "general" or not prompt_text) else 0.0
+
     return {
         "has_findings": has_findings,
         "has_severity": has_severity,
@@ -161,6 +171,8 @@ def _default_structural_evaluator(
         "has_recommendation": has_recommendation,
         "no_hallucinated_files": no_hallucinated_files,
         "has_scope_alignment": has_scope_alignment,
+        "prompt_has_invariant_shields": prompt_has_invariant_shields,
+        "prompt_declares_scope": prompt_declares_scope,
     }
 
 
