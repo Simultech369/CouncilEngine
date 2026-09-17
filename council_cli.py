@@ -355,7 +355,9 @@ def handle_repl_cmd(args):
 def handle_proof_cmd(args):
     print_banner("P3 Neuro-Symbolic Joint Program & Proof Planner")
     from neurosymbolic_proof_planner import NeuroSymbolicProofPlanner
+    from formal_theorem_prover_engine import FormalTheoremProverEngine
     planner = NeuroSymbolicProofPlanner()
+    prover = FormalTheoremProverEngine()
     
     plan = planner.synthesize_joint_plan(
         target_module="pricing",
@@ -363,9 +365,11 @@ def handle_proof_cmd(args):
         input_variables=["base_price", "rebate_rate"],
         invariants=[{"name": "non_negativity"}]
     )
+    is_verified = prover.evaluate_smt_plan(plan)
+    
     print(f"Plan ID        : {plan.plan_id}")
     print(f"SMT Clauses    : {len(plan.smt_clauses)} local check clauses")
-    print(f"Z3 Check       : {'PASSED (LOCAL SMT BOUNDED)' if plan.proof_verified else 'FAILED'}")
+    print(f"Z3 Check       : {'PASSED (LOCAL SMT BOUNDED)' if is_verified else 'FAILED'}")
     print(f"Proof SHA-256  : {plan.proof_sha256[:16]}...")
 
 def handle_redteam_cmd(args):

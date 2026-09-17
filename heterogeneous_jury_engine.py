@@ -45,20 +45,23 @@ class HeterogeneousJuryEngine:
 
         # 1. Check for Dissenting Proof Override (Rank 1 / 2 formal counterexample)
         for v in votes:
-            if v.vote == "REJECT" and v.formal_counterexample_sha256 is not None:
-                payload = f"{case_id}:DISSENT_OVERRIDE:{v.juror_id}:{v.formal_counterexample_sha256}"
-                r_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-                return HeterogeneousJuryReceipt(
-                    case_id=case_id,
-                    total_jurors=len(votes),
-                    distinct_families_count=distinct_families_count,
-                    consensus_decision="DISSENTING_PROOF_OVERRIDE",
-                    beta_binomial_stability=1.0,
-                    echo_chamber_risk_score=0.0,
-                    juror_votes=votes,
-                    receipt_sha256=r_sha,
-                    decided_at=now
-                )
+            if v.vote == "REJECT" and v.formal_counterexample_sha256:
+                # Must be a 64-char valid SHA256 hash string from a proof receipt
+                import re
+                if re.match(r"^[a-fA-F0-9]{64}$", v.formal_counterexample_sha256):
+                    payload = f"{case_id}:DISSENT_OVERRIDE:{v.juror_id}:{v.formal_counterexample_sha256}"
+                    r_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                    return HeterogeneousJuryReceipt(
+                        case_id=case_id,
+                        total_jurors=len(votes),
+                        distinct_families_count=distinct_families_count,
+                        consensus_decision="DISSENTING_PROOF_OVERRIDE",
+                        beta_binomial_stability=1.0,
+                        echo_chamber_risk_score=0.0,
+                        juror_votes=votes,
+                        receipt_sha256=r_sha,
+                        decided_at=now
+                    )
 
         # 2. Count votes
         approvals = sum(1 for v in votes if v.vote == "APPROVE")
@@ -76,16 +79,19 @@ class HeterogeneousJuryEngine:
         stability = round(1.0 - min(1.0, variance_p * 10.0), 3)
 
         # 5. Supermajority Threshold (2/3 quorum across heterogeneous families)
-        if distinct_families_count < 2:
+        N = len(votes)
+        if N < 3 or distinct_families_count < 3:
             decision: Literal["APPROVED_CONSENSUS", "REJECTED_CONSENSUS", "DISSENTING_PROOF_OVERRIDE", "HUNG_JURY"] = "HUNG_JURY"
-        elif approvals >= math.ceil(total_active * (2.0 / 3.0)):
+        elif approvals >= math.ceil(N * (2.0 / 3.0)):
             decision = "APPROVED_CONSENSUS"
-        elif rejections >= math.ceil(total_active * (2.0 / 3.0)):
+        elif rejections >= math.ceil(N * (2.0 / 3.0)):
             decision = "REJECTED_CONSENSUS"
         else:
             decision = "HUNG_JURY"
 
-        payload = f"{case_id}:{decision}:{approvals}:{rejections}:{distinct_families_count}:{stability}"
+        # Include full ballot data (juror ID, family, vote, confidence, rationale, hash)
+        vote_payload = "|".join([f"{v.juror_id}:{v.model_family}:{v.vote}:{v.confidence_score}:{v.rationale}:{v.formal_counterexample_sha256}" for v in votes])
+        payload = f"{case_id}:{decision}:{approvals}:{rejections}:{distinct_families_count}:{stability}:{vote_payload}"
         r_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
         return HeterogeneousJuryReceipt(

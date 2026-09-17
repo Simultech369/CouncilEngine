@@ -17,7 +17,7 @@ class TestNeuroSymbolicProofPlanner(unittest.TestCase):
             ]
         )
         self.assertIsInstance(plan, JointProgramAndProofPlan)
-        self.assertTrue(plan.proof_verified)
+        self.assertFalse(plan.proof_verified)
         self.assertEqual(len(plan.smt_clauses), 2)
         self.assertIn("def calculate_total", plan.synthesized_code)
         self.assertTrue(len(plan.proof_sha256) == 64)

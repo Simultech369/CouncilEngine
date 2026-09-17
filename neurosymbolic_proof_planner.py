@@ -57,13 +57,17 @@ def {function_name}({', '.join(input_variables)}):
             pre_asserts = [f"(assert (>= {v} 0))" for v in input_variables]
             
             # Postcondition: sum >= 0 and monotonicity
-            post_asserts = [
-                f"(assert (>= (+ {' '.join(input_variables)}) 0))",
-                f"(assert (<= {input_variables[0]} (+ {' '.join(input_variables)})))"
-            ]
+            post_asserts = []
+            if len(input_variables) > 0:
+                post_asserts = [
+                    f"(assert (>= (+ {' '.join(input_variables)}) 0))",
+                    f"(assert (<= {input_variables[0]} (+ {' '.join(input_variables)})))"
+                ]
 
             # Deterministic bounded check
             is_valid = len(input_variables) > 0 and all(len(v) > 0 for v in input_variables)
+            # The planner only plans the proof constraints, it does not evaluate them.
+            # An external SMT engine must evaluate the clauses to mark proof_satisfied=True.
             if not is_valid:
                 all_satisfied = False
 
@@ -73,8 +77,11 @@ def {function_name}({', '.join(input_variables)}):
                 precondition_assertions=pre_asserts,
                 postcondition_assertions=post_asserts,
                 solver_logic="QF_LIA",
-                proof_satisfied=is_valid
+                proof_satisfied=False  # Must be explicitly evaluated by an SMT engine
             ))
+
+        # A plan is unverified until the SMT engine actually runs it.
+        all_satisfied = False
 
         combined_proof = f"{py_code}\n" + "\n".join(
             "".join(c.variable_declarations + c.precondition_assertions + c.postcondition_assertions)
