@@ -29,10 +29,6 @@ class VisionPolicyMiner:
     def mine_repository_evidence(self) -> Dict[str, Any]:
         test_files = [f for f in os.listdir(self.workspace_root) if f.startswith("test_") and f.endswith(".py")]
         blueprints = [f for f in os.listdir(self.workspace_root) if f.endswith("_blueprint.md") or f.endswith("_spec.md")]
-        if not blueprints:
-            scratch_dir = os.path.expanduser(r"~/.gemini/antigravity/scratch/council_engine")
-            if os.path.exists(scratch_dir):
-                blueprints = [f for f in os.listdir(scratch_dir) if f.endswith("_blueprint.md") or f.endswith("_spec.md")]
         
         evidence = {
             "test_suites_count": len(test_files),

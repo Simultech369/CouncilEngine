@@ -123,9 +123,12 @@ class CouncilInteractiveREPL:
 
         elif cmd == "proof":
             from neurosymbolic_proof_planner import NeuroSymbolicProofPlanner
+            from formal_theorem_prover_engine import FormalTheoremProverEngine
             planner = NeuroSymbolicProofPlanner()
+            prover = FormalTheoremProverEngine()
             plan = planner.synthesize_joint_plan("repl_mod", "process", ["x", "y"], [{"name": "non_neg"}])
-            return True, f"[PROOF P3] Synthesized Joint Plan for '{plan.target_module}' | SMT Verified: {plan.proof_verified}"
+            is_verified = prover.evaluate_smt_plan(plan)
+            return True, f"[PROOF P3] Synthesized Joint Plan for '{plan.target_module}' | SMT Verified: {is_verified}"
 
         elif cmd == "redteam":
             from adversarial_red_team_engine import AdversarialRedTeamEngine

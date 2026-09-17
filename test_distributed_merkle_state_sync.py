@@ -33,7 +33,7 @@ class TestDistributedMerkleStateSync(unittest.TestCase):
         self.assertIsInstance(receipt, MerkleSyncReceipt)
         self.assertEqual(receipt.synchronized_nodes_count, 1)  # Node A learned r3
         self.assertEqual(len(receipt.symmetric_diff_cids), 3)  # r1, r2, r3 were divergent
-        self.assertTrue(receipt.sync_converged)
+        self.assertFalse(receipt.sync_converged)
         self.assertIn(r3.cid, self.node_a.dag_nodes)
         self.assertEqual(len(self.node_a.dag_nodes), 3)
 

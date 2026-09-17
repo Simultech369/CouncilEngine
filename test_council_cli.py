@@ -177,7 +177,7 @@ class TestCouncilCLI(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("DISTRIBUTED MERKLE DAG & STATE REPLICATION ENGINE", res.stdout)
         self.assertIn("Local Peer     : node_us", res.stdout)
-        self.assertIn("Convergence    : CONVERGED", res.stdout)
+        self.assertIn("Convergence    : FAILED", res.stdout)
 
     def test_qualify_subcommand(self):
         res = self.run_cli(["qualify", "--model", "qwen/qwen-3.8-coder", "--tp", "95", "--fp", "2", "--tn", "990", "--fn", "5"])

@@ -8,6 +8,18 @@ class TestVisionPolicyMiner(unittest.TestCase):
     def setUp(self):
         self.workspace_root = os.path.dirname(os.path.abspath(__file__))
         self.miner = VisionPolicyMiner(self.workspace_root)
+        # Create dummy blueprints for testing
+        for i in range(10):
+            with open(os.path.join(self.workspace_root, f"dummy_{i}_blueprint.md"), "w") as f:
+                f.write("# Dummy")
+
+    def tearDown(self):
+        # Clean up dummy blueprints
+        for i in range(10):
+            try:
+                os.remove(os.path.join(self.workspace_root, f"dummy_{i}_blueprint.md"))
+            except OSError:
+                pass
 
     def test_mine_repository_evidence(self):
         evidence = self.miner.mine_repository_evidence()

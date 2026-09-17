@@ -88,8 +88,11 @@ class DistributedMerkleStateSync:
     def add_external_node(self, node: MerkleDAGNode) -> None:
         """Merges a DAG node received from an external peer into the local state and prefix tree."""
         if node.cid not in self.dag_nodes:
-            self.dag_nodes[node.cid] = node
             key = f"{node.epoch_index:04x}:{node.payload_type}:{node.author_id}:{node.sequence_number:04x}"
+            if key in self.prefix_tree and self.prefix_tree[key] != node.cid:
+                # Collision detected! Retain existing, reject the competing branch
+                return
+            self.dag_nodes[node.cid] = node
             self.prefix_tree[key] = node.cid
 
     def get_merkle_root(self) -> str:
@@ -128,14 +131,22 @@ class DistributedMerkleStateSync:
         # Replicate missing nodes into local store
         for cid in missing_locally:
             node = remote_dag_nodes[cid]
-            self.dag_nodes[cid] = node
-            key = f"{node.epoch_index:04x}:{node.payload_type}:{node.author_id}:{node.sequence_number:04x}"
-            self.prefix_tree[key] = cid
+            self.add_external_node(node)
 
         new_local_root = self.get_merkle_root()
         session_id = f"sync_{hashlib.sha256(f'{self.peer_id}:{remote_peer_id}:{now}'.encode('utf-8')).hexdigest()[:10]}"
 
-        payload = f"{session_id}:{self.peer_id}:{remote_peer_id}:{local_root}:{new_local_root}:{len(symmetric_diff)}"
+        # Convergence is true only if the remote peer isn't missing anything from us
+        sync_converged = (len(missing_remotely) == 0)
+
+        # For the receipt, the remote_root_cid reflects their DAG prior to this one-way sync.
+        # We calculate it securely by just computing the prefix tree root on their nodes.
+        remote_prefix = {f"{n.epoch_index:04x}:{n.payload_type}:{n.author_id}:{n.sequence_number:04x}": n.cid for n in remote_dag_nodes.values()}
+        sorted_remote_keys = sorted(remote_prefix.keys())
+        remote_leaves = "".join(f"{k}:{remote_prefix[k]}" for k in sorted_remote_keys)
+        remote_root = hashlib.sha256(remote_leaves.encode("utf-8")).hexdigest() if remote_leaves else "root_empty_0000000000000000"
+
+        payload = f"{session_id}:{self.peer_id}:{remote_peer_id}:{local_root}:{remote_root}:{len(symmetric_diff)}"
         receipt_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
         return MerkleSyncReceipt(
@@ -143,10 +154,10 @@ class DistributedMerkleStateSync:
             local_peer_id=self.peer_id,
             remote_peer_id=remote_peer_id,
             local_root_cid=local_root,
-            remote_root_cid=new_local_root,
+            remote_root_cid=remote_root,
             synchronized_nodes_count=len(missing_locally),
             symmetric_diff_cids=symmetric_diff,
-            sync_converged=True,
+            sync_converged=sync_converged,
             receipt_sha256=receipt_sha,
             synced_at=now
         )

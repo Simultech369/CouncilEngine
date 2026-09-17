@@ -16,6 +16,7 @@ from heterogeneous_jury_engine import HeterogeneousJuryEngine, JuryJurorVote
 from windows_spend_ledger import WindowsAtomicSpendLedger
 from long_horizon_terminal_runner import LongHorizonTerminalRunner
 from council_telemetry import CouncilTelemetryTracer
+from formal_theorem_prover_engine import FormalTheoremProverEngine
 
 class MasterExecutionReceipt(ImmutableContract):
     run_id: str
@@ -49,6 +50,7 @@ class CouncilE2EOrchestrator:
         self.bounty_engine = BountyVulnerabilityEngine()
         self.redteam_engine = AdversarialRedTeamEngine()
         self.proof_planner = NeuroSymbolicProofPlanner()
+        self.prover_engine = FormalTheoremProverEngine()
         self.pbm_engine = PBMRebateEngine()
         self.rag_engine = RAGEvidenceEngine()
         self.sandbox_daemon = DockerSandboxDaemon()
@@ -87,7 +89,7 @@ class CouncilE2EOrchestrator:
             input_variables=["amount", "fee"],
             invariants=[{"name": "non_negativity"}]
         )
-        stage_2_ok = p3_plan.proof_verified
+        stage_2_ok = self.prover_engine.evaluate_smt_plan(p3_plan)
 
         # STAGE 3: Two-Stage RAG Evidence Grounding
         sample_doc = "Line 1: Spec for transaction fees\nLine 2: Transaction fee calculation rule.\nLine 3: Bounded math."

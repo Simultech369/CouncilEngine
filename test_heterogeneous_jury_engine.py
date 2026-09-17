@@ -31,7 +31,7 @@ class TestHeterogeneousJuryEngine(unittest.TestCase):
                 vote="REJECT",
                 confidence_score=0.99,
                 rationale="Found SMT invariant tier overlap counterexample",
-                formal_counterexample_sha256="ce_sha_smt_violation_proven"
+                formal_counterexample_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             )
         ]
         receipt = self.engine.evaluate_jury_deliberation("case_102", votes)
