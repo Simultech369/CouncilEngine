@@ -1,6 +1,8 @@
 import hashlib
+import json
 import os
 import time
+import uuid
 import requests
 from typing import Dict, Any, List, Optional, Tuple
 from council_contracts import (
@@ -18,6 +20,33 @@ from prompt_config_registry import (
     normalize_system_prompt,
     sha256_text,
 )
+
+try:
+    from privacy_orchestrator import (
+        LocalPrivacyOrchestrator,
+        PrivacyLeakViolationError,
+        PrivacyOrchestrationReceipt,
+        PrivacySanitizationRecord,
+        HEALTHCARE_PII_PATTERNS,
+        STRICT_LOCAL_PATH_REGEX,
+    )
+    from external_a2a_adapter import (
+        PHI_PII_REGEX,
+        PRIVATE_KEY_REGEX,
+    )
+except ImportError:
+    from .privacy_orchestrator import (
+        LocalPrivacyOrchestrator,
+        PrivacyLeakViolationError,
+        PrivacyOrchestrationReceipt,
+        PrivacySanitizationRecord,
+        HEALTHCARE_PII_PATTERNS,
+        STRICT_LOCAL_PATH_REGEX,
+    )
+    from .external_a2a_adapter import (
+        PHI_PII_REGEX,
+        PRIVATE_KEY_REGEX,
+    )
 
 class TokenBucketRateLimiter:
     def __init__(self, requests_per_minute: float = 60.0, burst_limit: int = 5):
@@ -79,11 +108,14 @@ class ModelGateway:
         self,
         dlq: Optional[DeadLetterQueue] = None,
         semantic_cache: Optional[SemanticASTCache] = None,
-        prompt_registry: Optional[PromptConfigRegistry] = None
+        prompt_registry: Optional[PromptConfigRegistry] = None,
+        privacy_orchestrator: Optional[LocalPrivacyOrchestrator] = None
     ):
         self.dlq = dlq or DeadLetterQueue()
         self.semantic_cache = semantic_cache or SemanticASTCache()
         self.prompt_registry = prompt_registry
+        self.privacy_orchestrator = privacy_orchestrator
+        self.last_privacy_receipt: Optional[ReceiptEnvelope[PrivacyOrchestrationReceipt]] = None
         self.rate_limiters: Dict[str, TokenBucketRateLimiter] = {}
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}
 
@@ -413,6 +445,26 @@ class ModelGateway:
                 self.dlq.record_failure(model_slug, "ROUTE_DENIED", prompt_text, err_msg)
                 return None, err_msg
 
+        # Step 5.6: Zero-Leak Egress Gate for external cloud or non-loopback routes
+        if route.compliance_tier != "LOCAL_ONLY_VERIFIED":
+            wire_str = json.dumps(payload)
+            for pattern in HEALTHCARE_PII_PATTERNS:
+                if pattern.search(wire_str):
+                    err_msg = f"RULE-PHI-001 VIOLATION: Unmasked healthcare PII pattern detected in outbound wire payload for route '{route_id}'"
+                    breaker.record_failure()
+                    self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, err_msg)
+                    raise PrivacyLeakViolationError(err_msg)
+            if PHI_PII_REGEX.search(wire_str):
+                err_msg = f"RULE-PHI-001 VIOLATION: Unmasked PHI/PII detected in outbound wire payload for route '{route_id}'"
+                breaker.record_failure()
+                self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, err_msg)
+                raise PrivacyLeakViolationError(err_msg)
+            if PRIVATE_KEY_REGEX.search(wire_str):
+                err_msg = f"SECURITY VIOLATION: Secret or credential detected in outbound wire payload for route '{route_id}'"
+                breaker.record_failure()
+                self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, err_msg)
+                raise PrivacyLeakViolationError(err_msg)
+
         # Step 6: Network HTTP Call
         t0 = time.perf_counter()
 
@@ -561,3 +613,108 @@ class ModelGateway:
             return ReceiptEnvelope.seal(probe), raw_resp
         except Exception as e:
             return None, None
+
+    def invoke_with_privacy(
+        self,
+        model_slug: str,
+        model_family: str,
+        provider: str,
+        route_env: ReceiptEnvelope[RouteAttestationReceipt],
+        qual_env: ReceiptEnvelope[ModelQualificationReceipt],
+        packet_env: ReceiptEnvelope[PacketSensitivityReceipt],
+        prompt_text: str,
+        budget_env: Optional[ReceiptEnvelope[PaidBudgetReservationReceipt]] = None,
+        system_prompt: str = "",
+        temperature: float = 0.1,
+        max_tokens: int = 512,
+        response_format: Optional[Dict[str, Any]] = None,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
+        provider_parameters: Optional[Dict[str, Any]] = None,
+        context_engine: Optional[LogDerivedContextEngine] = None,
+        timeout_sec: float = 60.0,
+        prompt_id: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        prompt_registry: Optional[PromptConfigRegistry] = None,
+        privacy_orchestrator: Optional[LocalPrivacyOrchestrator] = None,
+    ) -> Tuple[Optional[ReceiptEnvelope[ModelInvocationReceipt]], Optional[str], Optional[ReceiptEnvelope[PrivacyOrchestrationReceipt]]]:
+        """
+        Orchestrates an inference query with local edge PII/PHI masking, zero-leak verification,
+        dispatch through invoke_with_resilience, and response unmasking.
+        Produces both a ModelInvocationReceipt and a PrivacyOrchestrationReceipt.
+        """
+        orch = privacy_orchestrator or self.privacy_orchestrator or LocalPrivacyOrchestrator(upstream_model_slug=model_slug)
+        t0 = time.time()
+        orig_sha = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+
+        # Step 1: Mask entities at the local edge
+        masked_prompt, swapper, categories, raw_tokens = orch.extract_and_mask_entities(prompt_text)
+        masked_sha = hashlib.sha256(masked_prompt.encode("utf-8")).hexdigest()
+
+        # Step 2: Cryptographically verify zero-leak before dispatch
+        orch.assert_zero_leak_egress(masked_prompt, raw_tokens)
+
+        # Step 3: Ensure context engine has the masked prompt recorded
+        if context_engine is not None:
+            has_user_event = any(ev.event_type == "USER_INPUT" for ev in context_engine.event_log)
+            if not has_user_event:
+                context_engine.append_event("USER_INPUT", "user", {"content": masked_prompt})
+
+        # Step 4: Dispatch through resilient gateway using masked prompt
+        inv_env, raw_resp = self.invoke_with_resilience(
+            model_slug=model_slug,
+            model_family=model_family,
+            provider=provider,
+            route_env=route_env,
+            qual_env=qual_env,
+            packet_env=packet_env,
+            budget_env=budget_env,
+            prompt_text=masked_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            tool_schemas=tool_schemas,
+            provider_parameters=provider_parameters,
+            context_engine=context_engine,
+            timeout_sec=timeout_sec,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            prompt_registry=prompt_registry,
+        )
+
+        if inv_env is None or raw_resp is None:
+            return None, raw_resp, None
+
+        # Step 5: Unmask the upstream response locally
+        unmasked_resp = swapper.unmask(raw_resp)
+        final_sha = hashlib.sha256(unmasked_resp.encode("utf-8")).hexdigest()
+
+        t1 = time.time()
+        duration_ms = round((t1 - t0) * 1000.0, 3)
+
+        # Step 6: Seal PrivacyOrchestrationReceipt
+        sanitization_record = PrivacySanitizationRecord(
+            original_query_sha256=orig_sha,
+            sanitized_query_sha256=masked_sha,
+            redacted_entity_count=len(swapper.mapping),
+            masked_categories=categories,
+            zero_leak_verified=True,
+            sanitized_at=t0,
+        )
+
+        priv_receipt = PrivacyOrchestrationReceipt(
+            receipt_id=f"priv-orch-{uuid.uuid4().hex[:12]}",
+            sanitization=sanitization_record,
+            upstream_target_model=model_slug,
+            tokens_masked=len(swapper.mapping),
+            unmasked_occurrences=sum(raw_resp.count(p) for p in swapper.mapping.values()),
+            outbound_payload_sha256=masked_sha,
+            final_response_sha256=final_sha,
+            duration_ms=duration_ms,
+            created_at=t1,
+        )
+        priv_env = ReceiptEnvelope.seal(priv_receipt)
+        self.last_privacy_receipt = priv_env
+
+        return inv_env, unmasked_resp, priv_env
+

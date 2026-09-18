@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Pharmacy Fiduciary Commons - Vitalik Privacy Orchestrator
 tools/council/privacy_orchestrator.py
@@ -51,8 +51,8 @@ HEALTHCARE_PII_PATTERNS = [
     re.compile(r"\b(?:DOB|birthdate|born)\s*[:#]?\s*(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})\b", re.IGNORECASE),
     re.compile(r"\b(?:Rx|prescription)\s*[:#]?\s*([A-Za-z0-9]{6,12})\b", re.IGNORECASE),
     re.compile(r"\b[A-Z]{2}\d{7}\b"),
-    re.compile(r"\b(?:patient|patient\s*name)\s*[:=]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", re.IGNORECASE),
-    re.compile(r"\b(?:pharmacy|pharmacy\s*name)\s*[:=]\s*([A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)*\s*(?:Pharmacy|Rx|Drugs|Apothecary))\b", re.IGNORECASE),
+    re.compile(r"\b(?:patient|patient\s*name)\s*[:=]?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", re.IGNORECASE),
+    re.compile(r"\b(?:pharmacy|pharmacy\s*name)\s*[:=]?\s+([A-Z][a-z0-9]+(?:\s+[A-Z][a-z0-9]+)*\s*(?:Pharmacy|Rx|Drugs|Apothecary))\b", re.IGNORECASE),
 ]
 
 

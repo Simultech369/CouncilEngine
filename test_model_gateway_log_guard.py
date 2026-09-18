@@ -5,6 +5,7 @@ import tempfile
 import time
 from unittest.mock import patch, MagicMock
 from model_gateway import ModelGateway
+from privacy_orchestrator import PrivacyLeakViolationError
 from log_derived_context_engine import LogDerivedContextEngine, LogReconstructionDesyncError
 from model_routes import create_route_attestation
 from council_verifier import VerificationError
@@ -403,6 +404,136 @@ class TestModelGatewayLogGuard(unittest.TestCase):
                 )
 
             mock_post.assert_not_called()
+
+    def test_external_route_with_raw_phi_fails_closed(self):
+        ctx_engine = LogDerivedContextEngine(session_id="sess_ext_phi")
+        hosted_route = create_route_attestation(
+            route_id="route_hosted_deepseek",
+            provider_name="hosted_provider",
+            endpoint_url="https://api.hosted.ai/v1/chat/completions",
+            compliance_tier="HOSTED_NO_TRAIN",
+            content_retention_days=0,
+            zdr_verified=True,
+            fallbacks_allowed=False,
+            validity_sec=3500
+        )
+        ctx_engine.append_event("CONFIG_SET", "system", {
+            "model_slug": "deepseek-coder",
+            "provider": "hosted_provider",
+            "route_id": "route_hosted_deepseek",
+            "temperature": 0.1,
+            "max_tokens": 256,
+        })
+        phi_prompt = "Patient John Doe with SSN 000-12-3456 needs prescription review."
+        ctx_engine.append_event("USER_INPUT", "user", {"content": phi_prompt})
+
+        now = time.time()
+        qual_deepseek = ReceiptEnvelope.seal(ModelQualificationReceipt(
+            composite_key="hosted_provider:deepseek-coder",
+            model_slug="deepseek-coder",
+            model_family="deepseek",
+            provider="hosted_provider",
+            status="REVIEW_USABLE_FRESH",
+            benign_control_passed=True,
+            grounded_bug_passed=True,
+            exact_line_quote_verified=True,
+            json_schema_conformity=True,
+            evaluated_at=now - 100,
+            expires_at=now + 86400
+        ))
+
+        with patch("requests.post") as mock_post:
+            with self.assertRaises(PrivacyLeakViolationError):
+                self.gateway.invoke_with_resilience(
+                    model_slug="deepseek-coder",
+                    model_family="deepseek",
+                    provider="hosted_provider",
+                    route_env=hosted_route,
+                    qual_env=qual_deepseek,
+                    packet_env=self.packet,
+                    budget_env=None,
+                    prompt_text=phi_prompt,
+                    max_tokens=256,
+                    context_engine=ctx_engine
+                )
+            mock_post.assert_not_called()
+
+    def test_invoke_with_privacy_masks_and_unmasks_response(self):
+        ctx_engine = LogDerivedContextEngine(session_id="sess_privacy_orch")
+        hosted_route = create_route_attestation(
+            route_id="route_hosted_openai",
+            provider_name="openai",
+            endpoint_url="https://api.openai.com/v1/chat/completions",
+            compliance_tier="HOSTED_NO_TRAIN",
+            content_retention_days=0,
+            zdr_verified=True,
+            fallbacks_allowed=False,
+            validity_sec=3500
+        )
+        ctx_engine.append_event("CONFIG_SET", "system", {
+            "model_slug": "gpt-4o",
+            "provider": "openai",
+            "route_id": "route_hosted_openai",
+            "temperature": 0.1,
+            "max_tokens": 256,
+        })
+
+        now = time.time()
+        qual_gpt = ReceiptEnvelope.seal(ModelQualificationReceipt(
+            composite_key="openai:gpt-4o",
+            model_slug="gpt-4o",
+            model_family="gpt",
+            provider="openai",
+            status="REVIEW_USABLE_FRESH",
+            benign_control_passed=True,
+            grounded_bug_passed=True,
+            exact_line_quote_verified=True,
+            json_schema_conformity=True,
+            evaluated_at=now - 100,
+            expires_at=now + 86400
+        ))
+
+        raw_query = "Please audit patient John Smith with SSN 123-45-6789 and Rx RX999888 for dosage."
+
+        with patch("requests.post") as mock_post:
+            def mock_side_effect(url, headers, json, **kwargs):
+                messages = json.get("messages", [])
+                user_msg = messages[-1]["content"] if messages else ""
+                self.assertNotIn("123-45-6789", user_msg)
+                self.assertNotIn("John Smith", user_msg)
+                self.assertIn("[PII_UUID_", user_msg)
+                return MagicMock(
+                    status_code=200,
+                    json=lambda: {
+                        "choices": [{
+                            "message": {"content": f"Dosage for {user_msg} is verified safe."}
+                        }]
+                    },
+                    raise_for_status=lambda: None
+                )
+
+            mock_post.side_effect = mock_side_effect
+
+            inv_env, unmasked_resp, priv_env = self.gateway.invoke_with_privacy(
+                model_slug="gpt-4o",
+                model_family="gpt",
+                provider="openai",
+                route_env=hosted_route,
+                qual_env=qual_gpt,
+                packet_env=self.packet,
+                budget_env=None,
+                prompt_text=raw_query,
+                max_tokens=256,
+                context_engine=ctx_engine
+            )
+
+            self.assertIsNotNone(inv_env)
+            self.assertIsNotNone(priv_env)
+            self.assertIn("123-45-6789", unmasked_resp)
+            self.assertIn("John Smith", unmasked_resp)
+            self.assertEqual(priv_env.payload.sanitization.zero_leak_verified, True)
+            self.assertEqual(self.gateway.last_privacy_receipt, priv_env)
+            mock_post.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
