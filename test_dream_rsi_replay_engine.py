@@ -33,11 +33,18 @@ from council_contracts import ReceiptEnvelope
 
 
 # ──────────────────────────────────────────────────────────────────
-# Fixtures
-# ──────────────────────────────────────────────────────────────────
+def _find_real_reviews_dir() -> str:
+    # 1. Submodule layout: PBMRebateTreasuryFinal/tools/council -> parent PBM root
+    cand1 = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "reviews")
+    if os.path.isdir(cand1):
+        return cand1
+    # 2. Standalone Desktop layout: Desktop/CouncilEngine -> sibling Desktop/PBMRebateTreasuryFinal/reviews
+    cand2 = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PBMRebateTreasuryFinal", "reviews"))
+    if os.path.isdir(cand2):
+        return cand2
+    return cand1
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-REAL_REVIEWS_DIR = os.path.join(REPO_ROOT, "reviews")
+REAL_REVIEWS_DIR = _find_real_reviews_dir()
 
 
 def _make_temp_reviews_dir():
