@@ -26,6 +26,11 @@ from heterogeneous_jury_engine import HeterogeneousJuryEngine, JuryJurorVote
 from a2a_protocol_engine import A2AReconciliationLoop
 from governance_rules import INITIAL_FORMAL_RULES
 
+try:
+    from privacy_orchestrator import HEALTHCARE_PII_PATTERNS, PHI_PII_REGEX, STRICT_LOCAL_PATH_REGEX
+except ImportError:
+    from .privacy_orchestrator import HEALTHCARE_PII_PATTERNS, PHI_PII_REGEX, STRICT_LOCAL_PATH_REGEX
+
 class CouncilSubcommitteeEngine:
     """
     Orchestrates the 4 specialized Subcommittees across rotating OSS models:
@@ -87,16 +92,22 @@ class CouncilSubcommitteeEngine:
         # Check rule invariants
         has_token = any(bad in code for bad in ["ghp_", "github_pat_", "sk-proj-", "Bearer "])
         has_injection = any(bad in code for bad in ["<!-- system: override", "<|im_start|>", "ignore previous"])
-        
-        invariants = ["RULE-SEC-001", "RULE-SEC-002", "RULE-SEC-003", "RULE-SEC-004"]
+        has_path = bool(STRICT_LOCAL_PATH_REGEX.search(code))
+        has_phi = bool(PHI_PII_REGEX.search(code)) or any(p.search(code) for p in HEALTHCARE_PII_PATTERNS)
+
+        invariants = ["RULE-SEC-001", "RULE-SEC-002", "RULE-SEC-003", "RULE-SEC-004", "RULE-PHI-001"]
         if has_token or has_injection:
             verdict = "REJECT"
             conf = 0.99
             summary = "SecOps rejected: Token leak or injection sequence detected in proposal payload."
+        elif has_phi or has_path:
+            verdict = "REJECT"
+            conf = 0.98
+            summary = "SecOps rejected: Unmasked PHI/PII or raw local path detected. Route through LocalPrivacyOrchestrator."
         else:
             verdict = "APPROVE"
             conf = 0.95
-            summary = "SecOps approved: Verified zero raw tokens, clean boundary guards, and Gate 0 conformance."
+            summary = "SecOps approved: Verified zero raw tokens, zero unmasked PHI/paths, clean boundary guards, and Gate 0 conformance."
 
         return SubcommitteeEvaluationRecord(
             subcommittee_name="SecOps",
@@ -148,13 +159,20 @@ class CouncilSubcommitteeEngine:
         code = proposal.get("code", "def default_task(): pass")
         pis, cwe_checks = self.bounty_engine.evaluate_patch_integrity_score(code)
         
-        invariants = ["AST_PARSE_INTEGRITY", "10_CWE_SECURITY_MATRIX", "DETERMINISTIC_DECIMAL_MATH"]
-        if pis < 0.90:
+        # Check LRN-015 architectural invariants
+        protected_invariants = ["_startRound", "registerVoterWithSignature", "updateCreditLimit"]
+        violates_invariants = any(inv in code for inv in protected_invariants) and not proposal.get("allow_invariant_override", False)
+
+        invariants = ["AST_PARSE_INTEGRITY", "10_CWE_SECURITY_MATRIX", "DETERMINISTIC_DECIMAL_MATH", "LRN-015_INVARIANTS"]
+        if violates_invariants:
+            verdict = "REJECT"
+            summary = "Code integrity rejected: LRN-015 Architectural Invariant Violation. Modifying _startRound, registerVoterWithSignature, or updateCreditLimit requires explicit owner authorization."
+        elif pis < 0.90:
             verdict = "REJECT"
             summary = f"Code integrity rejected: PIS {pis:.2f} below threshold (0.90). Failing CWEs found."
         else:
             verdict = "APPROVE"
-            summary = f"Code integrity approved: Patch integrity score {pis:.2f} passed all CWE checks."
+            summary = f"Code integrity approved: Patch integrity score {pis:.2f} passed all CWE checks and LRN-015 invariant shields."
 
         return SubcommitteeEvaluationRecord(
             subcommittee_name="CodeIntegrity",
@@ -240,3 +258,24 @@ class CouncilSubcommitteeEngine:
             convened_at=time.time()
         )
         return ReceiptEnvelope.seal(receipt)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Council Subcommittee Convocation Engine")
+    parser.add_argument("--task", default="cli_audit", help="Task description")
+    parser.add_argument("--code", default="def default_task(): pass", help="Code snippet or proposal string")
+    parser.add_argument("--round", type=int, default=1, help="Rotation round (1-5)")
+    args = parser.parse_args()
+
+    engine = CouncilSubcommitteeEngine()
+    envelope = engine.convene_subcommittees_and_seal(
+        convocation_id=f"cli-{int(time.time())}",
+        task_id=args.task,
+        proposal={"task": args.task, "code": args.code},
+        rotation_round=args.round
+    )
+    print(f">> Subcommittee Convocation Sealed: {envelope.payload.overall_verdict} (Guardrails Held: {envelope.payload.guardrails_held})")
+    for ev in envelope.payload.evaluations:
+        print(f"   [{ev.subcommittee_name} | {ev.assigned_model_slug}] -> {ev.verdict}: {ev.findings_summary}")
+

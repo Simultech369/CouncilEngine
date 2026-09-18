@@ -82,5 +82,52 @@ class TestCouncilSubcommitteeEngine(unittest.TestCase):
         integrity_eval = next(e for e in receipt_env.payload.evaluations if e.subcommittee_name == "CodeIntegrity")
         self.assertEqual(integrity_eval.verdict, "REJECT")
 
+    def test_subcommittee_convocation_secops_phi_path_veto(self):
+        phi_proposal = {
+            "task": "process_patient_order",
+            "code": "patient_ssn = '999-11-2222'\npath = 'C:\\Users\\Josh\\data.json'"
+        }
+        receipt_env = self.engine.convene_subcommittees_and_seal(
+            convocation_id="convoc_004",
+            task_id="task_phi_leak",
+            proposal=phi_proposal,
+            rotation_round=1
+        )
+        self.assertEqual(receipt_env.payload.overall_verdict, "VETOED")
+        secops_eval = next(e for e in receipt_env.payload.evaluations if e.subcommittee_name == "SecOps")
+        self.assertEqual(secops_eval.verdict, "REJECT")
+        self.assertIn("Unmasked PHI/PII", secops_eval.findings_summary)
+
+    def test_subcommittee_convocation_code_integrity_lrn015_veto(self):
+        invariant_patch = {
+            "task": "refactor_voting_flow",
+            "code": "def patch():\n    # Modify _startRound logic\n    call('_startRound()')\n"
+        }
+        receipt_env = self.engine.convene_subcommittees_and_seal(
+            convocation_id="convoc_005",
+            task_id="task_invariant_violation",
+            proposal=invariant_patch,
+            rotation_round=2
+        )
+        self.assertEqual(receipt_env.payload.overall_verdict, "VETOED")
+        integrity_eval = next(e for e in receipt_env.payload.evaluations if e.subcommittee_name == "CodeIntegrity")
+        self.assertEqual(integrity_eval.verdict, "REJECT")
+        self.assertIn("LRN-015", integrity_eval.findings_summary)
+
+    def test_subcommittee_lrn015_allowed_with_override(self):
+        authorized_patch = {
+            "task": "intentional_invariant_maintenance",
+            "code": "def process(): return '_startRound() verified'",
+            "allow_invariant_override": True
+        }
+        receipt_env = self.engine.convene_subcommittees_and_seal(
+            convocation_id="convoc_006",
+            task_id="task_auth_patch",
+            proposal=authorized_patch,
+            rotation_round=1
+        )
+        self.assertEqual(receipt_env.payload.overall_verdict, "UNANIMOUS_APPROVAL")
+
+
 if __name__ == "__main__":
     unittest.main()
