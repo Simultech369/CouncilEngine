@@ -8,7 +8,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from council_contracts import (
     ReceiptEnvelope, RouteAttestationReceipt, ModelQualificationReceipt,
     PaidBudgetReservationReceipt, PacketSensitivityReceipt, ModelInvocationReceipt,
-    QualificationProbeInvocationReceipt, DeadLetterRecord
+    QualificationProbeInvocationReceipt, DeadLetterRecord,
+    ResponseSchemaValidationReceipt
 )
 from dead_letter_queue import DeadLetterQueue
 from log_derived_context_engine import LogDerivedContextEngine, LogReconstructionDesyncError
@@ -95,6 +96,178 @@ class CircuitBreaker:
             return True
         return False
 
+
+class ResponseSchemaViolationError(Exception):
+    """Raised when a model response fails structured output schema validation."""
+
+
+class ResponseSchemaValidator:
+    """
+    Validates model responses against a declared JSON schema specification.
+
+    Enforcement levels:
+    - JSON parsability: always enforced
+    - Required field presence: enforced when schema declares required_fields
+    - Type conformance: enforced when schema declares field_types
+    - Extra field policy: REJECT (fail-closed), WARN (log), ALLOW (passthrough)
+
+    Schema format (extension of OpenAI response_format):
+    {
+        "type": "json_object",
+        "schema": {
+            "required_fields": ["field_a", "field_b"],
+            "field_types": {"field_a": "bool", "field_b": "str"},
+            "extra_fields_policy": "REJECT"  // or "WARN" or "ALLOW"
+        }
+    }
+
+    When response_format is just {"type": "json_object"} with no schema key,
+    only JSON parsability is enforced.
+    """
+
+    TYPE_MAP = {
+        "str": str,
+        "string": str,
+        "int": int,
+        "integer": int,
+        "float": (int, float),
+        "number": (int, float),
+        "bool": bool,
+        "boolean": bool,
+        "list": list,
+        "array": list,
+        "dict": dict,
+        "object": dict,
+    }
+
+    @classmethod
+    def validate(
+        cls,
+        raw_response: str,
+        response_format: Optional[Dict[str, Any]],
+        model_slug: str,
+        route_id: str,
+    ) -> Tuple[ResponseSchemaValidationReceipt, Dict[str, Any]]:
+        """
+        Validate raw_response against the declared response_format.
+
+        Returns (receipt, parsed_dict) on success.
+        Raises ResponseSchemaViolationError on validation failure.
+        """
+        resp_hash = hashlib.sha256(raw_response.encode("utf-8")).hexdigest()
+        fmt = response_format or {}
+        schema = fmt.get("schema", {})
+        required_fields = schema.get("required_fields", [])
+        field_types = schema.get("field_types", {})
+        extra_policy = schema.get("extra_fields_policy", "ALLOW")
+
+        # Gate 1: JSON parsability
+        try:
+            parsed = json.loads(raw_response)
+            is_valid_json = True
+        except (json.JSONDecodeError, ValueError):
+            is_valid_json = False
+            parsed = {}
+
+        if not is_valid_json:
+            receipt = ResponseSchemaValidationReceipt(
+                invocation_model_slug=model_slug,
+                invocation_route_id=route_id,
+                response_payload_sha256=resp_hash,
+                declared_response_format=fmt,
+                validation_passed=False,
+                is_valid_json=False,
+                required_fields_present=False,
+                required_fields=required_fields,
+                missing_fields=required_fields,
+                type_mismatches=[],
+                extra_fields=[],
+                extra_fields_policy=extra_policy,
+            )
+            raise ResponseSchemaViolationError(
+                f"Response from '{model_slug}' on route '{route_id}' is not valid JSON. "
+                f"Sealed validation receipt: {resp_hash[:16]}"
+            )
+
+        if not isinstance(parsed, dict):
+            receipt = ResponseSchemaValidationReceipt(
+                invocation_model_slug=model_slug,
+                invocation_route_id=route_id,
+                response_payload_sha256=resp_hash,
+                declared_response_format=fmt,
+                validation_passed=False,
+                is_valid_json=True,
+                required_fields_present=False,
+                required_fields=required_fields,
+                missing_fields=required_fields,
+                type_mismatches=["root: expected object/dict, got " + type(parsed).__name__],
+                extra_fields=[],
+                extra_fields_policy=extra_policy,
+            )
+            raise ResponseSchemaViolationError(
+                f"Response from '{model_slug}' is JSON but not an object (got {type(parsed).__name__}). "
+                f"Sealed validation receipt: {resp_hash[:16]}"
+            )
+
+        # Gate 2: Required fields
+        missing = [f for f in required_fields if f not in parsed]
+        required_present = len(missing) == 0
+
+        # Gate 3: Type conformance
+        type_mismatches = []
+        for field_name, expected_type_str in field_types.items():
+            if field_name not in parsed:
+                continue  # missing fields handled by Gate 2
+            expected_type = cls.TYPE_MAP.get(expected_type_str.lower())
+            if expected_type is None:
+                continue  # unknown type spec → skip
+            if not isinstance(parsed[field_name], expected_type):
+                actual_type = type(parsed[field_name]).__name__
+                type_mismatches.append(
+                    f"{field_name}: expected {expected_type_str}, got {actual_type}"
+                )
+
+        # Gate 4: Extra fields
+        allowed_fields = set(required_fields) | set(field_types.keys())
+        extra_fields = []
+        if allowed_fields:  # only check if schema declares known fields
+            extra_fields = [k for k in parsed.keys() if k not in allowed_fields]
+
+        # Determine pass/fail
+        violations = []
+        if missing:
+            violations.append(f"Missing required fields: {missing}")
+        if type_mismatches:
+            violations.append(f"Type mismatches: {type_mismatches}")
+        if extra_fields and extra_policy == "REJECT":
+            violations.append(f"Rejected extra fields: {extra_fields}")
+
+        passed = len(violations) == 0
+
+        receipt = ResponseSchemaValidationReceipt(
+            invocation_model_slug=model_slug,
+            invocation_route_id=route_id,
+            response_payload_sha256=resp_hash,
+            declared_response_format=fmt,
+            validation_passed=passed,
+            is_valid_json=True,
+            required_fields_present=required_present,
+            required_fields=required_fields,
+            missing_fields=missing,
+            type_mismatches=type_mismatches,
+            extra_fields=extra_fields,
+            extra_fields_policy=extra_policy,
+        )
+
+        if not passed:
+            raise ResponseSchemaViolationError(
+                f"Response from '{model_slug}' on route '{route_id}' failed schema validation: "
+                f"{'; '.join(violations)}. Sealed validation receipt: {resp_hash[:16]}"
+            )
+
+        return receipt, parsed
+
+
 class ModelGateway:
     """
     Fault-tolerant dispatch gateway managing:
@@ -116,6 +289,7 @@ class ModelGateway:
         self.prompt_registry = prompt_registry
         self.privacy_orchestrator = privacy_orchestrator
         self.last_privacy_receipt: Optional[ReceiptEnvelope[PrivacyOrchestrationReceipt]] = None
+        self.last_validation_receipt: Optional[ReceiptEnvelope[ResponseSchemaValidationReceipt]] = None
         self.rate_limiters: Dict[str, TokenBucketRateLimiter] = {}
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}
 
@@ -405,6 +579,16 @@ class ModelGateway:
         )
         if cache_hit:
             raw_resp = cache_hit.entry.response_text
+            if response_format is not None:
+                val_receipt, _ = ResponseSchemaValidator.validate(
+                    raw_response=raw_resp,
+                    response_format=response_format,
+                    model_slug=model_slug,
+                    route_id=route_id,
+                )
+                self.last_validation_receipt = ReceiptEnvelope.seal(val_receipt)
+            else:
+                self.last_validation_receipt = None
             inv_env = self._seal_invocation_receipt(
                 model_slug=model_slug,
                 model_family=model_family,
@@ -481,6 +665,18 @@ class ModelGateway:
             raw_resp = self._extract_response_text(res.json(), protocol_type)
             latency = round((time.perf_counter() - t0) * 1000.0, 2)
 
+            # Step 6.5: Response Schema Validation Gate
+            if response_format is not None:
+                val_receipt, _ = ResponseSchemaValidator.validate(
+                    raw_response=raw_resp,
+                    response_format=response_format,
+                    model_slug=model_slug,
+                    route_id=route_id,
+                )
+                self.last_validation_receipt = ReceiptEnvelope.seal(val_receipt)
+            else:
+                self.last_validation_receipt = None
+
             breaker.record_success()
             self.semantic_cache.store(
                 model_slug=model_slug,
@@ -511,6 +707,10 @@ class ModelGateway:
                 latency_ms=latency
             ), raw_resp
 
+        except ResponseSchemaViolationError as schema_err:
+            breaker.record_failure()
+            self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, str(schema_err))
+            raise schema_err
         except Exception as e:
             breaker.record_failure()
             err_msg = f"Invocation failed on '{route_id}': {str(e)}"

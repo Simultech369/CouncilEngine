@@ -197,6 +197,27 @@ class QualificationProbeInvocationReceipt(ImmutableContract):
     completed_at: float
 
 
+# --- 8b. Response Schema Validation Receipt ---
+
+class ResponseSchemaValidationReceipt(ImmutableContract):
+    """Sealed proof that a model response was schema-validated before
+    entering the receipt chain. Fail-closed: any violation recorded here
+    MUST have prevented caching and downstream consumption."""
+    invocation_model_slug: str
+    invocation_route_id: str
+    response_payload_sha256: str
+    declared_response_format: Dict[str, Any]
+    validation_passed: bool
+    is_valid_json: bool
+    required_fields_present: bool
+    required_fields: List[str]
+    missing_fields: List[str]
+    type_mismatches: List[str]
+    extra_fields: List[str]
+    extra_fields_policy: str  # "REJECT", "WARN", "ALLOW"
+    validated_at: float = Field(default_factory=time.time)
+
+
 # --- 9. Council Roster Receipt ---
 
 class CouncilRosterReceipt(ImmutableContract):
