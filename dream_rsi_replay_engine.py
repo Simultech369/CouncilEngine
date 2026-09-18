@@ -191,9 +191,16 @@ class DossierCorpus:
       - Router metadata files: *-router-metadata.json
     """
 
-    def __init__(self, reviews_dir: str):
+    def __init__(self, reviews_dir: str = "reviews/"):
         self.reviews_dir = os.path.abspath(reviews_dir)
         if not os.path.isdir(self.reviews_dir):
+            if reviews_dir == "reviews/":
+                pbm_dir = os.path.abspath(os.path.join(self.reviews_dir, "..", "PBMRebateTreasuryFinal", "reviews"))
+                if os.path.isdir(pbm_dir):
+                    self.reviews_dir = pbm_dir
+                    return
+                os.makedirs(self.reviews_dir, exist_ok=True)
+                return
             raise FileNotFoundError(f"reviews directory not found: {self.reviews_dir}")
 
     def _extract_scope_from_filename(self, filename: str) -> str:
@@ -343,6 +350,61 @@ class DossierCorpus:
         """Load episodes filtered to a specific model slug."""
         return [ep for ep in self.load_episodes() if ep.model_slug == model_slug]
 
+    def load_from_trajectories(self, trajectories_json_path: str) -> List[ReplayEpisode]:
+        """
+        Loads execution traces from Dizzy golden_trajectories.json or other
+        dizzy.golden_trajectories.v1 JSON files and converts them into ReplayEpisode objects.
+        """
+        abs_path = os.path.abspath(trajectories_json_path)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"Trajectory file not found: {abs_path}")
+
+        with open(abs_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        episodes = []
+        trajectories = data.get("trajectories", [])
+        for traj in trajectories:
+            traj_id = traj.get("id", "unknown_traj")
+            description = traj.get("description", "")
+            steps = traj.get("steps", [])
+            outcome = traj.get("outcome", "unknown")
+
+            formatted_steps = []
+            for i, step in enumerate(steps):
+                actor = step.get("actor", "agent")
+                tool = step.get("tool", "")
+                content = step.get("content", "")
+                result = step.get("result", "")
+                status = step.get("status", "ok")
+                formatted_steps.append(
+                    f"Step {i+1} [{actor}] status={status}"
+                    + (f" tool={tool}" if tool else "")
+                    + (f" content={content}" if content else "")
+                    + (f" result={result}" if result else "")
+                )
+            trajectory_text = f"Trajectory {traj_id} ({description})\nOutcome: {outcome}\n" + "\n".join(formatted_steps)
+
+            meta = {
+                "trajectory_id": traj_id,
+                "description": description,
+                "step_count": len(steps),
+                "outcome": outcome,
+                "source_schema": data.get("schema", "dizzy.golden_trajectories.v1")
+            }
+
+            episodes.append(ReplayEpisode(
+                episode_id=f"traj-{traj_id}",
+                source_file=os.path.basename(abs_path),
+                review_scope="trajectory_execution",
+                model_slug="dizzy_runtime_agent",
+                original_prompt_sha256=_sha256(description),
+                response_text=trajectory_text,
+                response_sha256=_sha256(trajectory_text),
+                metadata=meta
+            ))
+        return episodes
+
 
 # ──────────────────────────────────────────────────────────────────
 # 4. Dream-RSI Replay Engine
@@ -477,6 +539,63 @@ class DreamRSIReplayEngine:
             emitted_at=time.time(),
         )
 
+        return ReceiptEnvelope.seal(report)
+
+    def replay_trajectories(
+        self,
+        trajectories_path: str,
+        variant_name: str,
+        new_prompt_text: str,
+        baseline_prompt_text: str = "",
+        evaluator_fn: Optional[EvaluatorFn] = None,
+    ) -> ReceiptEnvelope[DreamReplayReport]:
+        """
+        Replays external multi-step trajectories (e.g. from Dizzy golden_trajectories.json)
+        against a candidate prompt or policy variant.
+        """
+        episodes = self.corpus.load_from_trajectories(trajectories_path)
+        eval_fn = evaluator_fn or self.evaluator_fn
+        variant_sha = _sha256(new_prompt_text)
+
+        baseline_scores = []
+        variant_scores = []
+        results = []
+
+        for episode in episodes:
+            base_signals = eval_fn(episode, baseline_prompt_text)
+            base_composite = round(sum(base_signals.values()) / len(base_signals), 6) if base_signals else 0.0
+            baseline_scores.append(base_composite)
+
+            var_signals = eval_fn(episode, new_prompt_text)
+            var_composite = round(sum(var_signals.values()) / len(var_signals), 6) if var_signals else 0.0
+            variant_scores.append(var_composite)
+
+            delta = round(var_composite - base_composite, 6)
+
+            results.append(EpisodeReplayResult(
+                episode_id=episode.episode_id,
+                variant_name=variant_name,
+                original_prompt_sha256=episode.original_prompt_sha256,
+                variant_prompt_sha256=variant_sha,
+                signal_scores=var_signals,
+                composite_score=var_composite,
+                delta_vs_baseline=delta,
+                notes=f"trajectory={episode.metadata.get('trajectory_id')}, steps={episode.metadata.get('step_count')}",
+            ))
+
+        b_mean = round(sum(baseline_scores) / len(baseline_scores), 6) if baseline_scores else 0.0
+        v_mean = round(sum(variant_scores) / len(variant_scores), 6) if variant_scores else 0.0
+
+        report = DreamReplayReport(
+            variant_name=variant_name,
+            variant_prompt_sha256=variant_sha,
+            baseline_mean_score=b_mean,
+            variant_mean_score=v_mean,
+            delta=round(v_mean - b_mean, 6),
+            episode_count=len(episodes),
+            results=results,
+            emitted_at=time.time(),
+        )
         return ReceiptEnvelope.seal(report)
 
 
