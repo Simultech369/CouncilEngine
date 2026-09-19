@@ -443,18 +443,6 @@ class DreamRSIReplayEngine:
         composite = round(sum(signals.values()) / len(signals), 6)
         return signals, composite
 
-    def _compute_baseline_scores(
-        self,
-        episodes: List[ReplayEpisode],
-        baseline_prompt: str,
-    ) -> Dict[str, float]:
-        """Compute baseline scores for each episode."""
-        baselines: Dict[str, float] = {}
-        for episode in episodes:
-            _, composite = self._score_episode(episode, baseline_prompt)
-            baselines[episode.episode_id] = composite
-        return baselines
-
     def replay_with_variant(
         self,
         variant_name: str,
