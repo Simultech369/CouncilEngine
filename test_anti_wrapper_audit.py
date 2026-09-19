@@ -162,7 +162,86 @@ class TestAntiWrapperAuditor(unittest.TestCase):
         findings = WrapperTheatreDetector.scan_file("gateway.py", code)
         self.assertEqual(len(findings), 0)
 
+    def test_baseline_snapshot_contains_regression_metrics(self):
+        prod_file = os.path.join(self.test_dir, "prod.py")
+        with open(prod_file, "w", encoding="utf-8") as f:
+            f.write(
+                "def public_api():\n"
+                "    return 1\n"
+            )
+
+        report = AntiWrapperAuditor(target_dir=self.test_dir).run_audit()
+        baseline = AntiWrapperAuditor.build_baseline_snapshot(report)
+
+        self.assertEqual(baseline["schema_version"], AntiWrapperAuditor.BASELINE_SCHEMA_VERSION)
+        self.assertIn("production_code_lines", baseline["metrics"])
+        self.assertIn("unused_internal_helpers", baseline["metrics"])
+        self.assertIn("naked_wrappers", baseline["metrics"])
+
+    def test_baseline_comparison_passes_without_regression(self):
+        prod_file = os.path.join(self.test_dir, "prod.py")
+        with open(prod_file, "w", encoding="utf-8") as f:
+            f.write(
+                "def public_api():\n"
+                "    return 1\n"
+            )
+
+        auditor = AntiWrapperAuditor(target_dir=self.test_dir)
+        report = auditor.run_audit()
+        baseline = AntiWrapperAuditor.build_baseline_snapshot(report)
+        comparison = AntiWrapperAuditor.compare_to_baseline(report, baseline)
+
+        self.assertEqual(comparison["status"], "PASS")
+        self.assertTrue(all(check["status"] == "PASS" for check in comparison["checks"]))
+
+    def test_baseline_comparison_fails_on_new_naked_wrapper(self):
+        prod_file = os.path.join(self.test_dir, "prod.py")
+        with open(prod_file, "w", encoding="utf-8") as f:
+            f.write(
+                "def public_api():\n"
+                "    return 1\n"
+            )
+
+        auditor = AntiWrapperAuditor(target_dir=self.test_dir)
+        baseline = AntiWrapperAuditor.build_baseline_snapshot(auditor.run_audit())
+
+        with open(prod_file, "a", encoding="utf-8") as f:
+            f.write(
+                "\n"
+                "def naked_delegate(x):\n"
+                "    return target(x)\n"
+            )
+
+        comparison = AntiWrapperAuditor.compare_to_baseline(auditor.run_audit(), baseline)
+        failing_metrics = {check["metric"] for check in comparison["checks"] if check["status"] == "FAIL"}
+
+        self.assertEqual(comparison["status"], "FAIL")
+        self.assertIn("naked_wrappers", failing_metrics)
+
+    def test_baseline_comparison_warns_on_production_sloc_growth(self):
+        prod_file = os.path.join(self.test_dir, "prod.py")
+        with open(prod_file, "w", encoding="utf-8") as f:
+            f.write(
+                "def public_api():\n"
+                "    return 1\n"
+            )
+
+        auditor = AntiWrapperAuditor(target_dir=self.test_dir)
+        baseline = AntiWrapperAuditor.build_baseline_snapshot(auditor.run_audit())
+
+        with open(prod_file, "a", encoding="utf-8") as f:
+            f.write(
+                "\n"
+                "def another_public_api():\n"
+                "    return 2\n"
+            )
+
+        comparison = AntiWrapperAuditor.compare_to_baseline(auditor.run_audit(), baseline)
+        sloc_check = next(check for check in comparison["checks"] if check["metric"] == "production_code_lines")
+
+        self.assertEqual(comparison["status"], "PASS_WITH_WARNINGS")
+        self.assertEqual(sloc_check["status"], "WARN")
+
 
 if __name__ == "__main__":
     unittest.main()
-

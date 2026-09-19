@@ -1,0 +1,14 @@
+{
+  "schema_version": "council.anti_wrapper_baseline.v1",
+  "audit_target": ".",
+  "scanned_python_files": 139,
+  "metrics": {
+    "production_code_lines": 15715,
+    "test_code_lines": 7673,
+    "total_code_lines": 23388,
+    "test_to_code_ratio": 0.488,
+    "unused_internal_helpers": 0,
+    "naked_wrappers": 17,
+    "compatibility_shims": 1
+  }
+}

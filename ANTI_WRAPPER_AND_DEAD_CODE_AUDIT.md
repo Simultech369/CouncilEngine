@@ -6,11 +6,11 @@
 
 | Layer | Files | Total Lines | Code Lines (SLOC) | Comments | Blanks |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Production** | 72 | 18193 | 15622 | 428 | 2143 |
-| **Tests** | 67 | 9057 | 7609 | 222 | 1226 |
-| **Total** | **139** | **27250** | **23231** | **650** | **3369** |
+| **Production** | 72 | 18297 | 15715 | 428 | 2154 |
+| **Tests** | 67 | 9136 | 7673 | 222 | 1241 |
+| **Total** | **139** | **27433** | **23388** | **650** | **3395** |
 
-**Test-to-Production Code Ratio**: `0.487` (Target: >= 0.50)
+**Test-to-Production Code Ratio**: `0.488` (Target: >= 0.50)
 
 ## 2. Dead-Code & Unused Helper Audit
 Total unreferenced internal helpers detected: **0**
@@ -44,3 +44,12 @@ The current runner treats all external` |
 | `sovereign_swebench_batch_runner.py` | `_safe_path_ref` | `_hashed_ref` | `NAKED_WRAPPER` | `` |
 | `task_router.py` | `role_profiles` | `dict` | `NAKED_WRAPPER` | `` |
 | `task_router.py` | `_normalize_text` | `sub` | `NAKED_WRAPPER` | `` |
+
+## 4. Baseline Regression Check
+Status: **PASS**
+
+| Metric | Baseline | Current | Delta | Status | Reason |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `unused_internal_helpers` | `0` | `0` | `0` | `PASS` | No regression. |
+| `naked_wrappers` | `17` | `17` | `0` | `PASS` | No regression. |
+| `production_code_lines` | `15715` | `15715` | `0` | `PASS` | No production SLOC growth. |

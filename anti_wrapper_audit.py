@@ -206,6 +206,8 @@ class WrapperTheatreDetector:
 class AntiWrapperAuditor:
     """Coordinates full repository audit across ΔLOC, dead code, and wrapper theatre."""
 
+    BASELINE_SCHEMA_VERSION = "council.anti_wrapper_baseline.v1"
+
     def __init__(self, target_dir: str, exclude_dirs: Optional[Set[str]] = None):
         self.target_dir = os.path.abspath(target_dir)
         self.exclude_dirs = exclude_dirs or {
@@ -296,6 +298,75 @@ class AntiWrapperAuditor:
 
         return report
 
+    @classmethod
+    def build_baseline_snapshot(cls, report: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the stable metric subset used for regression checks."""
+        loc = report["loc_summary"]
+        dead = report["dead_code_summary"]
+        wrappers = report["wrapper_theatre_summary"]
+        return {
+            "schema_version": cls.BASELINE_SCHEMA_VERSION,
+            "audit_target": ".",
+            "scanned_python_files": report["scanned_python_files"],
+            "metrics": {
+                "production_code_lines": loc["production"]["code_lines"],
+                "test_code_lines": loc["test"]["code_lines"],
+                "total_code_lines": loc["total_code_lines"],
+                "test_to_code_ratio": loc["test_to_code_ratio"],
+                "unused_internal_helpers": dead["total_unused_helpers"],
+                "naked_wrappers": wrappers["naked_wrappers_count"],
+                "compatibility_shims": wrappers["compat_shims_count"],
+            },
+        }
+
+    @classmethod
+    def compare_to_baseline(cls, report: Dict[str, Any], baseline: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare current audit metrics against a prior baseline."""
+        if baseline.get("schema_version") != cls.BASELINE_SCHEMA_VERSION:
+            raise ValueError("Unsupported anti-wrapper baseline schema")
+
+        current = cls.build_baseline_snapshot(report)["metrics"]
+        prior = baseline.get("metrics") or {}
+        checks = []
+
+        def add_check(metric: str, status: str, reason: str):
+            before = prior.get(metric)
+            after = current.get(metric)
+            delta = after - before if isinstance(before, (int, float)) and isinstance(after, (int, float)) else None
+            checks.append({
+                "metric": metric,
+                "baseline": before,
+                "current": after,
+                "delta": delta,
+                "status": status,
+                "reason": reason,
+            })
+
+        for metric in ("unused_internal_helpers", "naked_wrappers"):
+            before = prior.get(metric)
+            after = current.get(metric)
+            if before is None:
+                add_check(metric, "WARN", "Metric missing from baseline; cannot compare.")
+            elif after > before:
+                add_check(metric, "FAIL", "Regression: count increased from baseline.")
+            else:
+                add_check(metric, "PASS", "No regression.")
+
+        before_prod = prior.get("production_code_lines")
+        after_prod = current.get("production_code_lines")
+        if before_prod is None:
+            add_check("production_code_lines", "WARN", "Metric missing from baseline; cannot compare.")
+        elif after_prod > before_prod:
+            add_check("production_code_lines", "WARN", "Production SLOC increased; review for deletion dividend or explicit justification.")
+        else:
+            add_check("production_code_lines", "PASS", "No production SLOC growth.")
+
+        return {
+            "baseline_schema_version": baseline.get("schema_version"),
+            "status": "FAIL" if any(c["status"] == "FAIL" for c in checks) else "PASS_WITH_WARNINGS" if any(c["status"] == "WARN" for c in checks) else "PASS",
+            "checks": checks,
+        }
+
     def format_markdown_report(self, report: Dict[str, Any]) -> str:
         loc = report["loc_summary"]
         dc = report["dead_code_summary"]
@@ -339,6 +410,19 @@ class AntiWrapperAuditor:
         else:
             md.append("✅ **Zero naked wrappers detected.** All delegating methods enforce contracts, receipts, rate limits, or verification.")
         md.append("")
+        comparison = report.get("baseline_comparison")
+        if comparison:
+            md.append("## 4. Baseline Regression Check")
+            md.append(f"Status: **{comparison['status']}**")
+            md.append("")
+            md.append("| Metric | Baseline | Current | Delta | Status | Reason |")
+            md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
+            for check in comparison["checks"]:
+                md.append(
+                    f"| `{check['metric']}` | `{check['baseline']}` | `{check['current']}` | "
+                    f"`{check['delta']}` | `{check['status']}` | {check['reason']} |"
+                )
+            md.append("")
         return "\n".join(md)
 
 
@@ -348,10 +432,18 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output JSON format")
     parser.add_argument("--strict", action="store_true", help="Fail closed if naked wrappers detected")
     parser.add_argument("--output-file", type=str, help="Write markdown or JSON report to file")
+    parser.add_argument("--baseline-file", type=str, help="Compare against or write a compact anti-wrapper baseline JSON")
+    parser.add_argument("--write-baseline", action="store_true", help="Write the current compact metric baseline to --baseline-file")
+    parser.add_argument("--fail-on-regression", action="store_true", help="Exit nonzero if baseline comparison finds dead-code or naked-wrapper regressions")
 
     args = parser.parse_args()
     auditor = AntiWrapperAuditor(target_dir=args.target_dir)
     report = auditor.run_audit()
+
+    if args.baseline_file and not args.write_baseline and os.path.exists(args.baseline_file):
+        with open(args.baseline_file, "r", encoding="utf-8") as f:
+            baseline = json.load(f)
+        report["baseline_comparison"] = AntiWrapperAuditor.compare_to_baseline(report, baseline)
 
     if args.json:
         out_text = json.dumps(report, indent=2)
@@ -366,9 +458,21 @@ def main():
     else:
         print(out_text)
 
+    if args.baseline_file and args.write_baseline:
+        os.makedirs(os.path.dirname(os.path.abspath(args.baseline_file)), exist_ok=True)
+        with open(args.baseline_file, "w", encoding="utf-8") as f:
+            json.dump(AntiWrapperAuditor.build_baseline_snapshot(report), f, indent=2)
+        print(f">> Baseline written to: {args.baseline_file}")
+
     if args.strict and report["wrapper_theatre_summary"]["naked_wrappers_count"] > 0:
         print(f"[STRICT FAIL] Detected {report['wrapper_theatre_summary']['naked_wrappers_count']} naked wrappers without contracts.", file=sys.stderr)
         sys.exit(1)
+
+    if args.fail_on_regression:
+        comparison = report.get("baseline_comparison")
+        if comparison and comparison["status"] == "FAIL":
+            print("[REGRESSION FAIL] Anti-wrapper or dead-code count increased from baseline.", file=sys.stderr)
+            sys.exit(1)
 
     sys.exit(0)
 
