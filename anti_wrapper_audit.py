@@ -274,8 +274,17 @@ class AntiWrapperAuditor:
         naked_wrappers = [w for w in wrapper_findings if w["classification"] == "NAKED_WRAPPER"]
         compat_shims = [w for w in wrapper_findings if w["classification"] == "COMPATIBILITY_SHIM"]
 
+        display_target = "."
+        if self.target_dir != os.path.abspath(os.getcwd()) and self.target_dir != os.path.abspath("."):
+            try:
+                rel = os.path.relpath(self.target_dir, os.getcwd()).replace("\\", "/")
+                if rel and not rel.startswith(".."):
+                    display_target = rel
+            except Exception:
+                display_target = "."
+
         report = {
-            "audit_target": self.target_dir,
+            "audit_target": display_target,
             "scanned_python_files": len(scanned_files),
             "loc_summary": {
                 "production": prod_metrics,

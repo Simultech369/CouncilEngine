@@ -1,0 +1,65 @@
+{
+  "schema": "dizzy.golden_trajectories.v1",
+  "trajectories": [
+    {
+      "id": "golden_context_assembly",
+      "description": "Deterministic context assembly and budget pack",
+      "steps": [
+        { "actor": "user", "content": "Assemble context for routing policy architecture.", "status": "ok" },
+        { "actor": "agent", "tool": "context_sources:createSourceSnapshot", "status": "success", "result": "Snapshot snap_4892 created with 12 records." },
+        { "actor": "agent", "tool": "context_assembler:assembleContext", "status": "success", "result": "Packed 3 slots within 24KB budget with provenance receipt." },
+        { "actor": "agent", "content": "Context assembly complete with verifiable provenance receipt.", "status": "success" }
+      ],
+      "outcome": "success"
+    },
+    {
+      "id": "golden_route_plan_execution",
+      "description": "Multi-tier route planning, clamping, and dispatch",
+      "steps": [
+        { "actor": "user", "content": "Run deterministic status check on local Ollama engine.", "status": "ok" },
+        { "actor": "agent", "tool": "routing_policy:resolveRequirements", "status": "success", "result": "Requirements resolved: effort_hint=none, max_thinking_tokens=0." },
+        { "actor": "agent", "tool": "routing_policy:planRouting", "status": "success", "result": "Selected tier T0 deterministic handler." },
+        { "actor": "agent", "tool": "routing_policy:executeRoutingPlan", "status": "success", "result": "Execution succeeded in 12ms, ttft=null." },
+        { "actor": "agent", "content": "Local status confirmed healthy via T0 route.", "status": "success" }
+      ],
+      "outcome": "success"
+    },
+    {
+      "id": "golden_stream_stall_guard",
+      "description": "Streaming latency tracking and frame health verification",
+      "steps": [
+        { "actor": "user", "content": "Stream response for operator telemetry inquiry.", "status": "ok" },
+        { "actor": "agent", "tool": "sse_stream:StreamingLatencyTracker", "status": "success", "result": "Latency tracker started." },
+        { "actor": "agent", "tool": "sse_stream:recordFrame", "status": "success", "result": "12 frames delivered, max_itl_ms=85, avg_itl_ms=42, stalls=0." },
+        { "actor": "agent", "tool": "sse_stream:buildStreamReceipt", "status": "success", "result": "Receipt generated with healthy stream latency metrics." },
+        { "actor": "agent", "content": "Telemetry delivered cleanly with full stream receipt.", "status": "success" }
+      ],
+      "outcome": "success"
+    },
+    {
+      "id": "golden_statem_plan_execute_verify",
+      "description": "StateM orchestrated checkpoint workflow",
+      "steps": [
+        { "actor": "user", "content": "Execute runbook step for database maintenance.", "status": "ok" },
+        { "actor": "agent", "tool": "statem_runbook:planStep", "status": "success", "result": "Step planned with rollback boundary." },
+        { "actor": "agent", "tool": "statem_checkpoint:createCheckpoint", "status": "success", "result": "Pre-execution checkpoint committed." },
+        { "actor": "agent", "tool": "statem_runbook:executeStep", "status": "success", "result": "Maintenance script executed with exit code 0." },
+        { "actor": "agent", "tool": "statem_checkpoint:verifyCheckpoint", "status": "success", "result": "Post-execution state invariants verified." },
+        { "actor": "agent", "content": "Runbook step completed with cryptographic checkpoint confirmation.", "status": "success" }
+      ],
+      "outcome": "success"
+    },
+    {
+      "id": "golden_review_cycle_synthesis",
+      "description": "Council subcommittee review and dialectical synthesis",
+      "steps": [
+        { "actor": "user", "content": "Audit staged PR for boundary governance.", "status": "ok" },
+        { "actor": "agent", "tool": "council_subcommittee:buildRotationSchedule", "status": "success", "result": "6 roles assigned across reviewer models." },
+        { "actor": "agent", "tool": "review_model_runner:executeReviewBatch", "status": "success", "result": "All 6 review positions collected." },
+        { "actor": "agent", "tool": "council_subcommittee:evaluateFindings", "status": "success", "result": "Quorum met (6/6), tension index 0.18, COUNCIL_PASSED." },
+        { "actor": "agent", "content": "Council audit passed with verified subcommittee consensus.", "status": "success" }
+      ],
+      "outcome": "success"
+    }
+  ]
+}

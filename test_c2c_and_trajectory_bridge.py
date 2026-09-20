@@ -22,8 +22,8 @@ from c2c_semantic_bus import (
     C2CFusionReceipt,
 )
 from council_contracts import ReceiptEnvelope
-
-DIZZY_GOLDEN_TRAJECTORIES = r"C:\Users\Josh\clawd\scripts\fixtures\golden_trajectories.json"
+LOCAL_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "golden_trajectories.json")
+DIZZY_GOLDEN_TRAJECTORIES = os.environ.get("DIZZY_GOLDEN_TRAJECTORIES", LOCAL_FIXTURE_PATH)
 
 
 class TestDizzyTrajectoryBridge(unittest.TestCase):
