@@ -1,4 +1,4 @@
-﻿# Dream-RSI & Parallel Thinking Architectural Specification
+# Dream-RSI & Parallel Thinking Architectural Specification
 
 **Status:** Canonical Reference Architecture  
 **Primary Subsystems:** `CouncilEngine` (RLVR, Jury, Proof Planner) & `Dizzy-the-Polymath` (Trajectory Distillery, Memory Metabolism)  
@@ -28,15 +28,15 @@ flowchart LR
     A["Historical Review Dossiers\n(rotational_swarm_review_dossier.md)"] --> B["Offline Simulator Engine\n(Dream-RSI Harness)"]
     C["Historical Trajectory Ledgers\n(runtime/trajectories/*.jsonl)"] --> B
     B --> D["Evaluate Candidate Prompts\n& Jury Weights"]
-    D --> E["Zero-Cost Validation\n& Convergence Check"]
-    E --> F["Deploy Hardened Policy\nOnline to Swarm"]
+    D --> E["Replay without live model API calls\n& Convergence Check"]
+    E --> F["Evaluate Hardened Policy\nCandidates for Review"]
 ```
 
 ### Subsystem Mappings
 1. **Dizzy-the-Polymath (`lib/trajectories.mjs`, `lib/memory_metabolism.mjs`):**
    - Historical known-good trajectories (`runtime/trajectories/known_good.jsonl`) act as test fixtures.
    - During memory metabolism, candidate heuristics and distilled pattern proposals are evaluated against past friction logs and trajectories before promotion.
-   - *Invariant:* Zero external API credit spend during memory metabolism runs.
+   - *Design Goal:* Replay against local artifacts without requiring live external model API calls.
 
 2. **CouncilEngine (`rlvr_ruler_reward_engine.py`, `rlvr_dataset_exporter.py`):**
    - Historical review dossiers (`reviews/*dossier*.md`) and past convocations serve as the replay environment.
@@ -108,7 +108,7 @@ VerifierKind = Literal[
 ```
 
 - **Zero-Tolerance Gate:** If an LLM jury votes "APPROVED" but the accompanying test suite fails (`TEST_EXIT_CODE != 0`), the scalar reward drops to `0.0` immediately.
-- **Dataset Export:** Trajectories that pass all verifiable reward signals with `scalar_reward >= 0.8` are exported by `rlvr_dataset_exporter.py` into JSONL datasets for local model fine-tuning (GRPO/RLVR), completing the recursive self-improvement cycle.
+- **Dataset Export:** Trajectories that pass all verifiable reward signals with `scalar_reward >= 0.8` are exported by `rlvr_dataset_exporter.py` into JSONL candidate datasets for evaluation or local offline model fine-tuning (GRPO/RLVR), providing structured training artifacts without claiming autonomous recursive self-improvement.
 
 ---
 
