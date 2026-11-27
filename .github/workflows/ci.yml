@@ -1,0 +1,47 @@
+name: CouncilEngine Offline Verification CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main, "feat/*", "codex/*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify-council:
+    name: Offline Verification, Anti-Wrapper & Dizzy Contract Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout CouncilEngine
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 1. Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio anyio pydantic pynacl requests z3-solver pip-audit
+
+      - name: 2. Secret & Credential Hygiene Scan
+        run: python -m pytest -q test_ci_and_secret_hygiene.py
+
+      - name: 3. Full Offline Pytest Verification Suite
+        run: python -m pytest -q
+
+      - name: 4. Anti-Wrapper & Dead-Code AST Regression Gate
+        run: python -B anti_wrapper_audit.py --target-dir . --baseline-file ANTI_WRAPPER_BASELINE.json --fail-on-regression
+
+      - name: 5. Dizzy <-> CouncilEngine Shared Approval & Router Contract
+        run: python -m pytest -q test_dizzy_approval_contract.py
+
+      - name: 6. Dependency Vulnerability Scan
+        if: github.event_name == 'pull_request'
+        run: pip-audit --desc on || echo "::warning::Review Python dependency advisories"
