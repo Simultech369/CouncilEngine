@@ -485,7 +485,8 @@ class ModelGateway:
         timeout_sec: float = 60.0,
         prompt_id: Optional[str] = None,
         prompt_version: Optional[str] = None,
-        prompt_registry: Optional[PromptConfigRegistry] = None
+        prompt_registry: Optional[PromptConfigRegistry] = None,
+        max_schema_retries: int = 0
     ) -> Tuple[Optional[ReceiptEnvelope[ModelInvocationReceipt]], Optional[str]]:
         """
         Dispatches model request through:
@@ -649,33 +650,62 @@ class ModelGateway:
                 self.dlq.record_failure(model_slug, "SCHEMA_VIOLATION", prompt_text, err_msg)
                 raise PrivacyLeakViolationError(err_msg)
 
-        # Step 6: Network HTTP Call
+        # Step 6: Network HTTP Call (with bounded structured-output validation retries)
         t0 = time.perf_counter()
+        bounded_retries = max(0, min(int(max_schema_retries), 3))
+        retry_errors: List[str] = []
 
         try:
-            res = requests.post(
-                target_url, 
-                headers=headers, 
-                json=payload, 
-                timeout=timeout_sec,
-                allow_redirects=False,
-                proxies={"http": "", "https": ""}
-            )
-            res.raise_for_status()
-            raw_resp = self._extract_response_text(res.json(), protocol_type)
-            latency = round((time.perf_counter() - t0) * 1000.0, 2)
-
-            # Step 6.5: Response Schema Validation Gate
-            if response_format is not None:
-                val_receipt, _ = ResponseSchemaValidator.validate(
-                    raw_response=raw_resp,
-                    response_format=response_format,
-                    model_slug=model_slug,
-                    route_id=route_id,
+            raw_resp = ""
+            for attempt_idx in range(bounded_retries + 1):
+                res = requests.post(
+                    target_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout_sec,
+                    allow_redirects=False,
+                    proxies={"http": "", "https": ""}
                 )
-                self.last_validation_receipt = ReceiptEnvelope.seal(val_receipt)
-            else:
-                self.last_validation_receipt = None
+                res.raise_for_status()
+                raw_resp = self._extract_response_text(res.json(), protocol_type)
+
+                # Step 6.5: Response Schema Validation Gate
+                if response_format is not None:
+                    try:
+                        val_receipt, _ = ResponseSchemaValidator.validate(
+                            raw_response=raw_resp,
+                            response_format=response_format,
+                            model_slug=model_slug,
+                            route_id=route_id,
+                        )
+                        self.last_validation_receipt = ReceiptEnvelope.seal(val_receipt)
+                        self.last_schema_retry_record = {
+                            "model_slug": model_slug,
+                            "route_id": route_id,
+                            "attempt_count": attempt_idx + 1,
+                            "max_retries": bounded_retries,
+                            "retry_errors": list(retry_errors),
+                            "succeeded": True,
+                        }
+                        break
+                    except ResponseSchemaViolationError as val_err:
+                        retry_errors.append(str(val_err))
+                        if attempt_idx >= bounded_retries:
+                            self.last_schema_retry_record = {
+                                "model_slug": model_slug,
+                                "route_id": route_id,
+                                "attempt_count": attempt_idx + 1,
+                                "max_retries": bounded_retries,
+                                "retry_errors": list(retry_errors),
+                                "succeeded": False,
+                            }
+                            raise val_err
+                else:
+                    self.last_validation_receipt = None
+                    self.last_schema_retry_record = None
+                    break
+
+            latency = round((time.perf_counter() - t0) * 1000.0, 2)
 
             breaker.record_success()
             self.semantic_cache.store(

@@ -478,3 +478,179 @@ class AgentTaskRouter:
     def _stable_task_id(cls, objective: str) -> str:
         return "task_" + hashlib.sha256(cls._normalize_text(objective).encode("utf-8")).hexdigest()[:16]
 
+
+VerificationJobStatus = Literal[
+    "running",
+    "waiting_for_approval",
+    "approved",
+    "rejected",
+    "resumed",
+    "cancelled",
+]
+
+
+class VerificationJobRecord(ImmutableContract):
+    """Stateful offline verification job record (never a consumer chat session)."""
+
+    job_id: str
+    objective: str
+    status: VerificationJobStatus
+    risk_tier: TaskRisk
+    assigned_roles: List[AgentRole]
+    required_quorum_roles: List[AgentRole]
+    completed_roles: List[AgentRole]
+    tests_passed: bool
+    live_container_verified: bool
+    promotion_allowed: bool
+    promotion_blockers: List[str]
+    approval_checkpoint_id: Optional[str] = None
+    resume_token: Optional[str] = None
+    route_digest_sha256: str
+    created_at: float
+    updated_at: float
+
+
+class VerificationJobRegistry:
+    """
+    Small stateful verification task router for CouncilEngine.
+    Accepts offline verification jobs, computes specialist role lanes, tracks completion,
+    and reports exact promotion blockers alongside HITL approval state.
+    """
+
+    def __init__(self, router: Optional[AgentTaskRouter] = None, approval_gate: Optional[Any] = None):
+        self.router = router or AgentTaskRouter()
+        self.approval_gate = approval_gate
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+
+    def _compute_blockers(self, job: Dict[str, Any]) -> List[str]:
+        blockers: List[str] = []
+        completed = set(job["completed_roles"])
+        for quorum_role in job["required_quorum_roles"]:
+            if quorum_role not in completed:
+                blockers.append(f"missing_quorum_role:{quorum_role}")
+        if not job["tests_passed"]:
+            blockers.append("deterministic_test_gate_not_passed")
+        if not job["live_container_verified"]:
+            blockers.append("live_container_isolation_unverified")
+        if job["status"] == "waiting_for_approval":
+            blockers.append("human_approval_pending")
+        elif job["status"] == "rejected":
+            blockers.append("human_approval_rejected")
+        elif job["status"] == "cancelled":
+            blockers.append("verification_job_cancelled")
+        return blockers
+
+    def submit_job(
+        self,
+        *,
+        objective: str,
+        candidate_files: Optional[List[str]] = None,
+        evidence_surfaces: Optional[List[str]] = None,
+        job_id: Optional[str] = None,
+        require_promotion_approval: bool = False,
+        tests_passed: bool = False,
+        live_container_verified: bool = False,
+        now: Optional[float] = None,
+    ) -> VerificationJobRecord:
+        ts = time.time() if now is None else float(now)
+        route_env = self.router.route_task(
+            objective=objective,
+            candidate_files=candidate_files,
+            evidence_surfaces=evidence_surfaces,
+            task_id=job_id,
+        )
+        route = route_env.payload
+        needs_hitl = bool(require_promotion_approval or route.human_l3_required or route.higher_review_recommended)
+
+        status: VerificationJobStatus = "running"
+        checkpoint_id: Optional[str] = None
+        resume_token: Optional[str] = None
+
+        if needs_hitl and self.approval_gate is not None:
+            cp = self.approval_gate.request_approval(
+                subject_type="COUNCIL_VERIFICATION_PROMOTION",
+                subject_payload_sha256=route.route_digest_sha256,
+                requested_authority="promotion_receipt",
+                job_id=route.task_id,
+                saved_progress={
+                    "objective": objective,
+                    "assigned_roles": [a.role_id for a in route.assignments],
+                },
+                reason=f"Risk tier {route.risk_tier} requires human promotion sign-off",
+                now=ts,
+            )
+            status = cp.workflow_state
+            checkpoint_id = cp.checkpoint_id
+            resume_token = cp.resume_token
+        elif needs_hitl:
+            status = "waiting_for_approval"
+
+        raw_job: Dict[str, Any] = {
+            "job_id": route.task_id,
+            "objective": objective,
+            "status": status,
+            "risk_tier": route.risk_tier,
+            "assigned_roles": [a.role_id for a in route.assignments],
+            "required_quorum_roles": list(route.required_quorum_roles),
+            "completed_roles": [],
+            "tests_passed": bool(tests_passed),
+            "live_container_verified": bool(live_container_verified),
+            "approval_checkpoint_id": checkpoint_id,
+            "resume_token": resume_token,
+            "route_digest_sha256": route.route_digest_sha256,
+            "created_at": ts,
+            "updated_at": ts,
+        }
+        blockers = self._compute_blockers(raw_job)
+        raw_job["promotion_blockers"] = blockers
+        raw_job["promotion_allowed"] = (len(blockers) == 0 and raw_job["status"] in ("approved", "resumed"))
+        self._jobs[route.task_id] = raw_job
+        return VerificationJobRecord(**raw_job)
+
+    def update_job_evidence(
+        self,
+        job_id: str,
+        *,
+        completed_roles: Optional[Sequence[AgentRole]] = None,
+        tests_passed: Optional[bool] = None,
+        live_container_verified: Optional[bool] = None,
+        now: Optional[float] = None,
+    ) -> VerificationJobRecord:
+        if job_id not in self._jobs:
+            raise KeyError(f"Verification job '{job_id}' not found")
+        ts = time.time() if now is None else float(now)
+        job = dict(self._jobs[job_id])
+        if completed_roles is not None:
+            merged = list(job["completed_roles"]) + list(completed_roles)
+            job["completed_roles"] = self.router._dedupe_roles(merged)
+        if tests_passed is not None:
+            job["tests_passed"] = bool(tests_passed)
+        if live_container_verified is not None:
+            job["live_container_verified"] = bool(live_container_verified)
+        self._sync_approval_state(job)
+        job["updated_at"] = ts
+        job["promotion_blockers"] = self._compute_blockers(job)
+        job["promotion_allowed"] = (len(job["promotion_blockers"]) == 0 and job["status"] in ("approved", "resumed"))
+        self._jobs[job_id] = job
+        return VerificationJobRecord(**job)
+
+    def _sync_approval_state(self, job: Dict[str, Any]) -> None:
+        cp_id = job.get("approval_checkpoint_id")
+        if cp_id and self.approval_gate is not None and cp_id in self.approval_gate.checkpoints:
+            cp = self.approval_gate.checkpoints[cp_id]
+            job["status"] = cp["workflow_state"]
+
+    def get_job(self, job_id: str) -> VerificationJobRecord:
+        if job_id not in self._jobs:
+            raise KeyError(f"Verification job '{job_id}' not found")
+        job = dict(self._jobs[job_id])
+        self._sync_approval_state(job)
+        job["promotion_blockers"] = self._compute_blockers(job)
+        job["promotion_allowed"] = (len(job["promotion_blockers"]) == 0 and job["status"] in ("approved", "resumed"))
+        self._jobs[job_id] = job
+        return VerificationJobRecord(**job)
+
+    def list_jobs(self) -> List[VerificationJobRecord]:
+        return [self.get_job(jid) for jid in self._jobs]
+
+

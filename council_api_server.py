@@ -40,7 +40,9 @@ class CouncilAPIServer:
     Handles HTTP dispatch, streaming NDJSON/SSE event formatting, and unified health checks.
     """
 
-    def __init__(self):
+    def __init__(self, approval_secret: str = "council-hitl-default-secret-32bytes", ledger_dir: Optional[str] = None):
+        from human_approval import CouncilApprovalGate
+        from task_router import VerificationJobRegistry
         self.detector = AuthorityConflictDetector()
         self.dlq = DeadLetterQueue()
         self.pbm_rebate = PBMRebateEngine()
@@ -52,11 +54,18 @@ class CouncilAPIServer:
         self.a2a_trust_store.register_agent("antigravity", "secret_key_antigravity_hmac_256")
         self.a2a_trust_store.register_agent("codex", "secret_key_codex_hmac_256")
         self.a2a_router = A2AMessageRouter(self.a2a_trust_store)
+        self.approval_gate = CouncilApprovalGate(secret_key=approval_secret, ledger_dir=ledger_dir)
+        self.verification_jobs = VerificationJobRegistry(approval_gate=self.approval_gate)
 
     def handle_health(self) -> Dict[str, Any]:
-        """GET /health - Returns engine status, passing test count, and telemetry."""
+        """GET /health - Returns engine status, live disk/mailbox/approval telemetry, and cold-model posture."""
+        import shutil
+        disk = shutil.disk_usage(".")
+        pending_approvals = len(self.approval_gate.list_pending())
+        mailbox_depth = sum(len(q) for q in getattr(self.a2a_router, "mailboxes", {}).values())
         return {
             "status": "HEALTHY",
+            "role": "offline_verification_helper",
             "version": "7.0.0",
             "engine_location": "council_engine/",
             "passing_tests": COUNCIL_VERIFIED_TEST_COUNT,
@@ -68,6 +77,25 @@ class CouncilAPIServer:
                 "Deterministic Decimal(18,6) Math",
                 "Zero-Network Docker Sandboxes"
             ],
+            "subsystems": {
+                "disk": {
+                    "free_bytes": disk.free,
+                    "total_bytes": disk.total,
+                    "healthy": disk.free > 64 * 1024 * 1024,
+                },
+                "mailbox": {
+                    "queued_messages": mailbox_depth,
+                    "dead_letters": len(self.dlq.list_dead_letters()),
+                },
+                "approvals": {
+                    "waiting_for_approval": pending_approvals,
+                    "audit_entries": len(self.approval_gate.audit_log),
+                },
+                "models": {
+                    "mode": "offline_deterministic_default",
+                    "cold_models_marked": True,
+                },
+            },
             "timestamp": time.time()
         }
 
@@ -297,6 +325,92 @@ class CouncilAPIServer:
             "envelope_sha256": receipt_env.envelope_sha256
         }
 
+    def handle_submit_verification_job(self, req_data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/verification/jobs - Submit an offline verification job and inspect promotion blockers."""
+        objective = str(req_data.get("objective", "")).strip()
+        if not objective:
+            raise ValueError("Missing required 'objective' for verification job")
+        record = self.verification_jobs.submit_job(
+            objective=objective,
+            candidate_files=req_data.get("candidate_files") or [],
+            evidence_surfaces=req_data.get("evidence_surfaces") or [],
+            job_id=req_data.get("job_id"),
+            require_promotion_approval=bool(req_data.get("require_promotion_approval", False)),
+            tests_passed=bool(req_data.get("tests_passed", False)),
+            live_container_verified=bool(req_data.get("live_container_verified", False)),
+        )
+        return record.model_dump()
+
+    def handle_get_verification_job(self, job_id: str) -> Dict[str, Any]:
+        """GET /api/v1/verification/jobs/<job_id> - Inspect verification job status and promotion blockers."""
+        clean_id = str(job_id or "").strip()
+        if not clean_id:
+            raise ValueError("Missing required 'job_id'")
+        record = self.verification_jobs.get_job(clean_id).model_dump()
+        record["blocker_count"] = len(record.get("promotion_blockers") or [])
+        return record
+
+    def handle_list_verification_jobs(self) -> Dict[str, Any]:
+        """GET /api/v1/verification/jobs - List all tracked verification jobs."""
+        jobs = [j.model_dump() for j in self.verification_jobs.list_jobs()]
+        return {"job_count": len(jobs), "jobs": jobs}
+
+    def handle_request_approval(self, req_data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/approvals/request - Create a waiting_for_approval checkpoint with resume_token."""
+        subject_type = str(req_data.get("subject_type") or "PROMOTION_GATE").strip()
+        subject_sha = str(req_data.get("subject_payload_sha256") or "").strip()
+        if not subject_sha:
+            raise ValueError("Missing required 'subject_payload_sha256'")
+        cp = self.approval_gate.request_approval(
+            subject_type=subject_type,
+            subject_payload_sha256=subject_sha,
+            requested_authority=str(req_data.get("requested_authority") or "promotion_receipt"),
+            job_id=req_data.get("job_id"),
+            saved_progress=req_data.get("saved_progress") or {},
+            reason=str(req_data.get("reason") or "Human approval required"),
+            validity_sec=int(req_data.get("validity_sec") or 3600),
+        )
+        return cp.model_dump()
+
+    def handle_list_pending_approvals(self) -> Dict[str, Any]:
+        """GET /api/v1/approvals/pending - List pending HITL promotion/authority checkpoints."""
+        pending = [cp.model_dump() for cp in self.approval_gate.list_pending()]
+        return {"pending_count": len(pending), "pending": pending}
+
+    def handle_resolve_approval(self, req_data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/approvals/resolve - Approve or reject a waiting_for_approval checkpoint."""
+        token = str(req_data.get("resume_token") or "").strip()
+        decision = str(req_data.get("decision") or "").strip()
+        approver = str(req_data.get("approver_identity") or "operator").strip()
+        reason = str(req_data.get("reason") or "").strip()
+        cp = self.approval_gate.resolve_approval(
+            resume_token=token,
+            decision=decision,
+            approver_identity=approver,
+            reason=reason,
+        )
+        return cp.model_dump()
+
+    def handle_resume_approval(self, req_data: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /api/v1/approvals/resume - Consume approved resume_token -> resumed."""
+        token = str(req_data.get("resume_token") or "").strip()
+        expected_sha = req_data.get("expected_subject_sha256")
+        actor_id = str(req_data.get("actor_id") or "dizzy_bridge").strip()
+        cp = self.approval_gate.resume_with_token(
+            resume_token=token,
+            expected_subject_sha256=expected_sha,
+            actor_id=actor_id,
+        )
+        return cp.model_dump()
+
+    def handle_approval_audit_log(self) -> Dict[str, Any]:
+        """GET /api/v1/approvals/audit - Return verified hash-chained approval audit log."""
+        verification = self.approval_gate.verify_audit_log()
+        return {
+            **verification,
+            "entries": [entry.model_dump() for entry in self.approval_gate.audit_log],
+        }
+
 import http.server
 import socketserver
 
@@ -314,6 +428,22 @@ class CouncilAPIRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, data)
         elif self.path in ("/api/v1/dlq", "/dlq"):
             data = self.server_engine.handle_dlq_summary()
+            self._send_json(200, data)
+        elif self.path in ("/api/v1/verification/jobs", "/verification/jobs"):
+            data = self.server_engine.handle_list_verification_jobs()
+            self._send_json(200, data)
+        elif self.path.startswith("/api/v1/verification/jobs/") or self.path.startswith("/verification/jobs/"):
+            job_id = self.path.rstrip("/").split("/")[-1]
+            try:
+                data = self.server_engine.handle_get_verification_job(job_id)
+                self._send_json(200, data)
+            except KeyError as exc:
+                self._send_json(404, {"error": str(exc), "code": "JOB_NOT_FOUND"})
+        elif self.path in ("/api/v1/approvals/pending", "/approvals/pending"):
+            data = self.server_engine.handle_list_pending_approvals()
+            self._send_json(200, data)
+        elif self.path in ("/api/v1/approvals/audit", "/approvals/audit"):
+            data = self.server_engine.handle_approval_audit_log()
             self._send_json(200, data)
         elif "/a2a/mailbox" in self.path:
             agent_id = "codex"
@@ -344,21 +474,41 @@ class CouncilAPIRequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             req_data = {}
 
-        if self.path in ("/api/v1/bounty/scan", "/bounty/scan"):
-            code = req_data.get("code", "def safe(): pass")
-            data = self.server_engine.handle_bounty_scan(code)
-            self._send_json(200, data)
-        elif self.path in ("/api/v1/fwa/audit", "/pbm/audit"):
-            data = self.server_engine.handle_fwa_audit(req_data)
-            self._send_json(200, data)
-        elif self.path in ("/api/v1/a2a/send", "/a2a/send"):
-            data = self.server_engine.handle_a2a_send(req_data)
-            self._send_json(200, data)
-        elif self.path in ("/api/v1/a2a/reconcile", "/a2a/reconcile"):
-            data = self.server_engine.handle_a2a_reconcile(req_data)
-            self._send_json(200, data)
-        else:
-            self._send_json(404, {"error": f"Endpoint '{self.path}' not found"})
+        try:
+            if self.path in ("/api/v1/bounty/scan", "/bounty/scan"):
+                code = req_data.get("code", "def safe(): pass")
+                data = self.server_engine.handle_bounty_scan(code)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/fwa/audit", "/pbm/audit"):
+                data = self.server_engine.handle_fwa_audit(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/a2a/send", "/a2a/send"):
+                data = self.server_engine.handle_a2a_send(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/a2a/reconcile", "/a2a/reconcile"):
+                data = self.server_engine.handle_a2a_reconcile(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/verification/jobs", "/verification/jobs"):
+                data = self.server_engine.handle_submit_verification_job(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/approvals/request", "/approvals/request"):
+                data = self.server_engine.handle_request_approval(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/approvals/resolve", "/approvals/resolve"):
+                data = self.server_engine.handle_resolve_approval(req_data)
+                self._send_json(200, data)
+            elif self.path in ("/api/v1/approvals/resume", "/approvals/resume"):
+                data = self.server_engine.handle_resume_approval(req_data)
+                self._send_json(200, data)
+            else:
+                self._send_json(404, {"error": f"Endpoint '{self.path}' not found"})
+        except KeyError as exc:
+            self._send_json(404, {"error": str(exc), "code": "NOT_FOUND"})
+        except ValueError as exc:
+            code = getattr(exc, "code", "INVALID_REQUEST")
+            self._send_json(409 if code == "ILLEGAL_STATE_TRANSITION" else 400, {"error": str(exc), "code": code})
+        except TimeoutError as exc:
+            self._send_json(410, {"error": str(exc), "code": "APPROVAL_EXPIRED"})
 
     def _send_json(self, status_code: int, data: Dict[str, Any]):
         self.send_response(status_code)
